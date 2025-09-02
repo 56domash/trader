@@ -1,0 +1,14 @@
+
+db_path: "./runtime.db"
+symbol: "7203.T"
+jst_start: "09:00"
+jst_end: "10:00"
+thr_long: 0.6
+thr_short: -0.6
+exit_long: -0.2
+exit_short: 0.2
+ttl_min: 8
+lot_size: 100
+fee_rate: 0.0002
+ingest_period: "7d"
+use_yfinance: true
