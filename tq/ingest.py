@@ -157,7 +157,8 @@ def fetch_market_1m(period: str) -> pd.DataFrame:
     返り値列（一例）: ['datetime','NK225_FUT','SECTOR_AUTO']
     """
     # Nikkei 225 proxy
-    nk_candidates = ["NK=F", "NIY=F", "JP225USD=X"]
+    nk_candidates = ["1306.T"]
+    # nk_candidates = ["NK=F", "NIY=F", "JP225USD=X"]
     nk_df = None
     for sym in nk_candidates:
         df = _yf_download(sym, interval="1m", period=period)
