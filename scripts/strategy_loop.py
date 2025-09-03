@@ -1,34 +1,25 @@
-﻿# -*- coding: utf-8 -*-
-"""
-ingest_loop.py (windowed)
-- 指定した日付（JST）の 8:55〜10:05 だけ 1分足を取得して SQLite(runtime.db) にUPSERT
-- いつでもテストできるよう --target-date / --use-last-session / --once をサポート
-- 日経先物は候補 ["NIY=F","JP225USD=X"] でフォールバック
-"""
-
-import argparse
-import sqlite3
+﻿# === FILE: scripts/strategy_loop.py ===
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+import argparse, json, sqlite3
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
-from typing import Iterable, Tuple, Optional
+import pandas as pd, yaml
 
-import pandas as pd
-import yfinance as yf
-import yaml
+from tq.utils import jst_window_utc, ensure_utc_index, vwap_day
+from tq.features import compute_all
 
 JST = ZoneInfo("Asia/Tokyo")
 
-# =========================
-# Config
-# =========================
 @dataclass
 class Config:
     db_path: str = "./runtime.db"
     symbol: str = "7203.T"
+    jst_start: str = "09:00"
+    jst_end: str = "10:00"
     usd_jpy: str = "USDJPY=X"
-    nikkei_fut_candidates: list = None
-    auto_sector_proxy: Optional[str] = "1622.T"  # 任意
 
 def load_config(path: str) -> Config:
     try:
@@ -38,201 +29,112 @@ def load_config(path: str) -> Config:
     c = Config()
     c.db_path = raw.get("db_path", c.db_path)
     c.symbol = raw.get("symbol", raw.get("trading", {}).get("symbol", c.symbol))
-    market = raw.get("market", {})
-    c.usd_jpy = market.get("usd_jpy", c.usd_jpy)
-    c.nikkei_fut_candidates = market.get("nikkei_fut_candidates", ["NIY=F", "JP225USD=X"])
-    c.auto_sector_proxy = market.get("auto_sector_proxy", c.auto_sector_proxy)
+    c.jst_start = raw.get("jst_start", c.jst_start)
+    c.jst_end   = raw.get("jst_end", c.jst_end)
+    c.usd_jpy   = raw.get("usd_jpy", raw.get("market", {}).get("usd_jpy", c.usd_jpy))
     return c
 
-# =========================
-# Time window helpers
-# =========================
-def compute_window_for_date(date_jst: datetime.date) -> Tuple[datetime, datetime]:
-    start_jst = datetime.combine(date_jst, time(8, 55), JST)
-    end_jst   = datetime.combine(date_jst, time(10, 5), JST)
-    return (start_jst.astimezone(timezone.utc),
-            end_jst.astimezone(timezone.utc))
+CREATE_SIGNALS_SQL = """
+CREATE TABLE IF NOT EXISTS signals_1m (
+  symbol TEXT NOT NULL, ts TEXT NOT NULL,
+  buy1 REAL, buy2 REAL, buy3 REAL, buy4 REAL, buy5 REAL,
+  sell1 REAL, sell2 REAL, sell3 REAL, sell4 REAL, sell5 REAL,
+  S REAL, meta_json TEXT,
+  PRIMARY KEY(symbol, ts)
+);
+"""
 
-def decide_target_date(conn: sqlite3.Connection, symbol: str,
-                       use_last_session: bool,
-                       target_date_str: Optional[str]) -> datetime.date:
-    if target_date_str:
-        return datetime.strptime(target_date_str, "%Y-%m-%d").date()
-    if use_last_session:
-        row = conn.execute(
-            "SELECT ts FROM bars_1m WHERE symbol=? ORDER BY ts DESC LIMIT 1",
-            (symbol,)
-        ).fetchone()
-        if not row:
-            # 何も無ければ今日
-            return datetime.now(JST).date()
-        return pd.to_datetime(row[0], utc=True).tz_convert(JST).date()
-    return datetime.now(JST).date()
+def _load_bars(conn, symbol, s, e):
+    df = pd.read_sql_query("""
+        SELECT ts, open, high, low, close, volume
+        FROM bars_1m WHERE symbol=? AND ts>=? AND ts<? ORDER BY ts
+    """, conn, params=(symbol, s.isoformat(), e.isoformat()), parse_dates=["ts"])
+    if df.empty: return df
+    df = df.set_index("ts"); df = ensure_utc_index(df)
+    df["vwap"] = vwap_day(df); return df
 
-# =========================
-# yfinance helpers
-# =========================
-def yf_download_1m(symbol: str, period: str = "7d") -> pd.DataFrame:
-    df = yf.download(symbol, interval="1m", period=period, auto_adjust=False, progress=False)
-    if df is None or df.empty:
-        return pd.DataFrame()
-    # index をUTC Datetimeに揃える
-    idx = pd.to_datetime(df.index, utc=True)
-    df = df.copy()
-    df.index = idx
-    df.rename(columns=str.lower, inplace=True)
-    # volume が無い銘柄もあるので欠損を0埋め
-    if "volume" not in df.columns:
-        df["volume"] = 0
-    return df[["open","high","low","close","volume"]]
+def _load_fx(conn, symbol, s, e):
+    if not symbol: return pd.DataFrame()
+    df = pd.read_sql_query("""
+        SELECT ts, close, open, high, low, volume
+        FROM fx_1m WHERE symbol=? AND ts>=? AND ts<? ORDER BY ts
+    """, conn, params=(symbol, s.isoformat(), e.isoformat()), parse_dates=["ts"])
+    if df.empty: return df
+    df = df.set_index("ts"); df = ensure_utc_index(df); return df
 
-def fetch_window(symbol: str, start_utc: datetime, end_utc: datetime) -> pd.DataFrame:
-    base = yf_download_1m(symbol)
-    if base.empty:
-        return base
-    df = base[(base.index >= start_utc) & (base.index < end_utc)].copy()
-    df["symbol"] = symbol
+def systems_10(bars: pd.DataFrame, feat: pd.DataFrame) -> pd.DataFrame:
+    buy1 = feat[["ret1","ret3","mom_slope3"]].mean(axis=1)
+    buy2 = feat[["vwap_gap","price_above_vwap","ma_fast_slow"]].mean(axis=1)
+    buy3 = feat[["bb_pos","kelt_pos","stoch_k"]].mean(axis=1)
+    buy4 = feat[["vol_z60","vol_ratio_5_20","obv_slope"]].mean(axis=1)
+    buy5 = feat[["ret10","ret20","rsi14"]].mean(axis=1)
+
+    sell1 = 1 - feat["ret1"]
+    sell2 = 1 - feat[["vwap_gap","price_above_vwap"]].mean(axis=1)
+    sell3 = 1 - feat[["bb_pos","stoch_k","stoch_d"]].mean(axis=1)
+    sell4 = 1 - feat[["vol_z60","vol_ratio_5_20"]].mean(axis=1)
+    sell5 = 1 - feat[["ret5","rsi14"]].mean(axis=1)
+
+    df = pd.DataFrame({
+        "buy1":buy1,"buy2":buy2,"buy3":buy3,"buy4":buy4,"buy5":buy5,
+        "sell1":sell1,"sell2":sell2,"sell3":sell3,"sell4":sell4,"sell5":sell5,
+    }, index=feat.index)
+    df["S"] = df[[f"buy{i}" for i in range(1,6)]].mean(axis=1) - df[[f"sell{i}" for i in range(1,6)]].mean(axis=1)
     return df
 
-def fetch_with_candidates(cands: Iterable[str], start_utc: datetime, end_utc: datetime) -> Tuple[str, pd.DataFrame]:
-    for sym in cands:
-        df = fetch_window(sym, start_utc, end_utc)
-        if not df.empty:
-            return sym, df
-    return "", pd.DataFrame()
-
-# =========================
-# DB helpers
-# =========================
-CREATE_BARS_SQL = """
-CREATE TABLE IF NOT EXISTS bars_1m (
-  symbol TEXT NOT NULL,
-  ts     TEXT NOT NULL,   -- UTC ISO8601
-  open REAL, high REAL, low REAL, close REAL, volume REAL,
-  PRIMARY KEY (symbol, ts)
-);
-"""
-CREATE_FX_SQL = """
-CREATE TABLE IF NOT EXISTS fx_1m (
-  symbol TEXT NOT NULL,
-  ts     TEXT NOT NULL,
-  open REAL, high REAL, low REAL, close REAL, volume REAL,
-  PRIMARY KEY (symbol, ts)
-);
-"""
-CREATE_MKT_SQL = """
-CREATE TABLE IF NOT EXISTS market_1m (
-  source TEXT NOT NULL,   -- 取得に使ったティッカー（例: NIY=F / JP225USD=X）
-  ts     TEXT NOT NULL,
-  open REAL, high REAL, low REAL, close REAL, volume REAL,
-  PRIMARY KEY (source, ts)
-);
-"""
-
-def to_utc_iso(ts) -> str:
-    t = pd.Timestamp(ts)
-    if t.tzinfo is None:
-        t = t.tz_localize("UTC")
-    else:
-        t = t.tz_convert("UTC")
-    return t.isoformat()
-
-def upsert_bars(conn: sqlite3.Connection, table: str, keyname: str, df: pd.DataFrame):
-    if df.empty:
-        return 0
-    if table == "bars_1m":
-        conn.execute(CREATE_BARS_SQL)
-    elif table == "fx_1m":
-        conn.execute(CREATE_FX_SQL)
-    elif table == "market_1m":
-        conn.execute(CREATE_MKT_SQL)
+def upsert_signals(conn, symbol, sys10, meta) -> int:
+    if sys10 is None or sys10.empty: return 0
+    conn.execute(CREATE_SIGNALS_SQL)
     rows = []
-    for ts, r in df.iterrows():
-        rows.append((
-            r[keyname],
-            to_utc_iso(ts),
-            float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]), float(r["volume"])
-        ))
-    if table in ("bars_1m", "fx_1m"):
-        sql = f"""
-        INSERT INTO {table}
-          (symbol, ts, open, high, low, close, volume)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(symbol, ts) DO UPDATE SET
-          open=excluded.open, high=excluded.high, low=excluded.low,
-          close=excluded.close, volume=excluded.volume
-        """
-    else:
-        sql = f"""
-        INSERT INTO {table}
-          (source, ts, open, high, low, close, volume)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(source, ts) DO UPDATE SET
-          open=excluded.open, high=excluded.high, low=excluded.low,
-          close=excluded.close, volume=excluded.volume
-        """
-    conn.executemany(sql, rows)
-    conn.commit()
-    return len(rows)
+    for ts, r in sys10.iterrows():
+        tsu = pd.Timestamp(ts)
+        tsu = tsu.tz_localize("UTC") if tsu.tzinfo is None else tsu.tz_convert("UTC")
+        rows.append((symbol, tsu.isoformat(),
+                     float(r.get("buy1",0.5)), float(r.get("buy2",0.5)), float(r.get("buy3",0.5)), float(r.get("buy4",0.5)), float(r.get("buy5",0.5)),
+                     float(r.get("sell1",0.5)), float(r.get("sell2",0.5)), float(r.get("sell3",0.5)), float(r.get("sell4",0.5)), float(r.get("sell5",0.5)),
+                     float(r.get("S",0.0)), json.dumps(meta, ensure_ascii=False)))
+    sql = """
+    INSERT INTO signals_1m (symbol, ts, buy1,buy2,buy3,buy4,buy5, sell1,sell2,sell3,sell4,sell5, S, meta_json)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(symbol, ts) DO UPDATE SET
+      buy1=excluded.buy1, buy2=excluded.buy2, buy3=excluded.buy3, buy4=excluded.buy4, buy5=excluded.buy5,
+      sell1=excluded.sell1, sell2=excluded.sell2, sell3=excluded.sell3, sell4=excluded.sell4, sell5=excluded.sell5,
+      S=excluded.S, meta_json=excluded.meta_json
+    """
+    conn.executemany(sql, rows); conn.commit(); return len(rows)
 
-# =========================
-# Main
-# =========================
+def decide_target_date(conn, symbol, use_last, target_date_str):
+    if target_date_str: return datetime.strptime(target_date_str, "%Y-%m-%d").date()
+    if use_last:
+        row = conn.execute("SELECT ts FROM bars_1m WHERE symbol=? ORDER BY ts DESC LIMIT 1", (symbol,)).fetchone()
+        if row: return pd.to_datetime(row[0], utc=True).tz_convert(JST).date()
+    return pd.Timestamp.now(JST).date()
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--use-last-session", action="store_true",
-                    help="bars_1m の最新営業日をターゲットにする")
-    ap.add_argument("--target-date", help="YYYY-MM-DD（JST）を指定してその日の 08:55-10:05 を取得")
-    ap.add_argument("--once", action="store_true",
-                    help="1回だけ取得して終了（ループしない）")
+    ap.add_argument("--use-last-session", action="store_true")
+    ap.add_argument("--target-date")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     conn = sqlite3.connect(cfg.db_path, timeout=5_000)
-
     try:
-        target_date = decide_target_date(conn, cfg.symbol, args.use_last_session, args.target_date)
-        start_utc, end_utc = compute_window_for_date(target_date)
-        print(f"[INGEST] window JST {target_date} 08:55–10:05 -> "
-              f"UTC {start_utc.isoformat()} ~ {end_utc.isoformat()} | db={cfg.db_path}")
+        tgt = decide_target_date(conn, cfg.symbol, args.use_last_session, args.target_date)
+        s_utc, e_utc = jst_window_utc(tgt, tuple(map(int, cfg.jst_start.split(":"))), tuple(map(int, cfg.jst_end.split(":"))))
+        print(f"[STRATEGY] window JST {cfg.jst_start}-{cfg.jst_end} -> UTC {s_utc.isoformat()} ~ {e_utc.isoformat()} | symbol={cfg.symbol}")
 
-        # 1) メイン銘柄（bars_1m）
-        d_stock = fetch_window(cfg.symbol, start_utc, end_utc)
-        n1 = upsert_bars(conn, "bars_1m", "symbol", d_stock)
-        print(f"[INGEST][bars_1m] {cfg.symbol}: +{n1} rows")
+        bars = _load_bars(conn, cfg.symbol, s_utc, e_utc)
+        if bars.empty: raise RuntimeError("no bars in window")
+        fx   = _load_fx(conn, cfg.usd_jpy, s_utc, e_utc)
 
-        # 2) 為替（fx_1m）
-        d_fx = fetch_window(cfg.usd_jpy, start_utc, end_utc)
-        n2 = upsert_bars(conn, "fx_1m", "symbol", d_fx)
-        print(f"[INGEST][fx_1m] {cfg.usd_jpy}: +{n2} rows")
-
-        # 3) 先物/CFD（market_1m）フォールバック
-        src, d_mkt = fetch_with_candidates(cfg.nikkei_fut_candidates, start_utc, end_utc)
-        if d_mkt.empty:
-            print(f"[INGEST][market_1m][WARN] fut/CFD not available: {cfg.nikkei_fut_candidates}")
-        else:
-            d_mkt = d_mkt.rename(columns={"symbol":"source"})
-            n3 = upsert_bars(conn, "market_1m", "source", d_mkt)
-            print(f"[INGEST][market_1m] {src}: +{n3} rows")
-
-        # 4) セクタ代理（任意）
-        if cfg.auto_sector_proxy:
-            d_sec = fetch_window(cfg.auto_sector_proxy, start_utc, end_utc)
-            if d_sec.empty:
-                print(f"[INGEST][market_1m][INFO] sector proxy empty: {cfg.auto_sector_proxy}")
-            else:
-                d_sec = d_sec.rename(columns={"symbol":"source"})
-                n4 = upsert_bars(conn, "market_1m", "source", d_sec)
-                print(f"[INGEST][market_1m] {cfg.auto_sector_proxy}: +{n4} rows")
-
+        feat = compute_all(bars, fx, None)
+        sys10 = systems_10(bars, feat)
+        meta = {"symbol": cfg.symbol, "jst_window":[cfg.jst_start, cfg.jst_end], "n_features": feat.shape[1], "feature_names": list(feat.columns)}
+        n = upsert_signals(conn, cfg.symbol, sys10, meta)
+        print(f"[STRATEGY] done -> {n} rows to signals_1m")
     finally:
         conn.close()
-
-    if not args.once:
-        # ループ版が必要ならここにバックオフ付きループを実装
-        # 今回は “指定日時だけ取る” リクエストなので一回で終了
-        pass
 
 if __name__ == "__main__":
     main()

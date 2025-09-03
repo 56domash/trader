@@ -21,7 +21,7 @@ jst_end: "10:00"
 
 
 # しきい値（まずはロングだけ刺さるように）
-thr_long: 0.01        # ← sampleが出した p70≈0.249 を少し下回らせる
+thr_long: 0.1        # ← sampleが出した p70≈0.249 を少し下回らせる
 thr_short: -0.50      # ← ショートは当面オフに近い値に
 ema_span: 3
 confirm_bars: 1
