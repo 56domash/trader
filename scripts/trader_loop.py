@@ -396,6 +396,32 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
     conn.commit()
     print(f"[TRADER] done for {tgt} ({cfg.symbol})")
 
+# 先頭付近
+from tq.features import PACK3  # すでにALL_SPECSに含めるならこのimportは不要
+
+# ...systems_10 内 or 直後
+def systems_10(bars: pd.DataFrame, feat: pd.DataFrame, use_pack3_in_systems: bool = False, pack3_weight: float = 0.2):
+    # 既存の buy/sell 計算 ...
+    # buy_sum, sell_sum を既に作っている前提
+
+    if use_pack3_in_systems:
+        pack3_buy = feat[[
+            "or_pos","or_break_up","dir_streak_up","rsi_slope3","macd_hist_slope3","price_to_prev_close"
+        ]].mean(axis=1)
+        pack3_sell = feat[[
+            "or_break_dn","dir_streak_dn","entropy10","ret_skew20"
+        ]].mean(axis=1)
+        buy_sum = (buy_sum + pack3_weight * pack3_buy) / (1.0 + pack3_weight)
+        sell_sum = (sell_sum + pack3_weight * pack3_sell) / (1.0 + pack3_weight)
+
+    S = (buy_sum - sell_sum).clip(-1, 1)
+    # 戻り値は既存の形式に合わせて
+    out = pd.DataFrame({
+        "S": S
+    }, index=bars.index)
+    return out
+
+
 # =============================================================================
 # CLI
 # =============================================================================

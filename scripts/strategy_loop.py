@@ -1,140 +1,262 @@
-﻿# === FILE: scripts/strategy_loop.py ===
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
-import argparse, json, sqlite3
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
-from zoneinfo import ZoneInfo
-import pandas as pd, yaml
+"""
+strategy_loop.py (Pack1+Pack2+Pack3, SはPack2ベース)
+- DBの bars_1m から 1分足を取得（UTC保存前提）
+- 特徴量は features.compute_packs() で Pack1/2/3 を一括生成
+- S は Pack2 の buy*_base / sell*_base の平均差で算出（互換）
+- signals_1m と features_1m に UPSERT
+"""
 
-from tq.utils import jst_window_utc, ensure_utc_index, vwap_day
-from tq.features import compute_all
+import argparse
+import sqlite3
+from dataclasses import dataclass
+from datetime import date, datetime, time, timezone
+from typing import Optional, Tuple, List
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import yaml
+
+from tq.features import compute_packs  # ← Pack1+Pack2+Pack3 を返す
 
 JST = ZoneInfo("Asia/Tokyo")
 
+
+# =========================
+# Config
+# =========================
 @dataclass
 class Config:
     db_path: str = "./runtime.db"
     symbol: str = "7203.T"
     jst_start: str = "09:00"
     jst_end: str = "10:00"
-    usd_jpy: str = "USDJPY=X"
 
 def load_config(path: str) -> Config:
+    raw = {}
     try:
         raw = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
     except FileNotFoundError:
-        raw = {}
+        pass
     c = Config()
     c.db_path = raw.get("db_path", c.db_path)
-    c.symbol = raw.get("symbol", raw.get("trading", {}).get("symbol", c.symbol))
+    c.symbol = raw.get("symbol", c.symbol)
     c.jst_start = raw.get("jst_start", c.jst_start)
     c.jst_end   = raw.get("jst_end", c.jst_end)
-    c.usd_jpy   = raw.get("usd_jpy", raw.get("market", {}).get("usd_jpy", c.usd_jpy))
     return c
 
+
+# =========================
+# Time helpers
+# =========================
+def jst_day_from_arg(target_date: Optional[str], use_last_session: bool,
+                     conn: sqlite3.Connection, symbol: str) -> date:
+    if target_date:
+        return datetime.strptime(target_date, "%Y-%m-%d").date()
+    if use_last_session:
+        row = conn.execute(
+            "SELECT ts FROM bars_1m WHERE symbol=? ORDER BY ts DESC LIMIT 1",
+            (symbol,)
+        ).fetchone()
+        if row:
+            return pd.to_datetime(row[0], utc=True).tz_convert(JST).date()
+    return datetime.now(JST).date()
+
+def jst_window_utc(d: date, start_hm: Tuple[int, int], end_hm: Tuple[int, int]) -> Tuple[datetime, datetime]:
+    s = datetime.combine(d, time(start_hm[0], start_hm[1]), JST).astimezone(timezone.utc)
+    e = datetime.combine(d, time(end_hm[0], end_hm[1]), JST).astimezone(timezone.utc)
+    return s, e
+
+def ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    idx = pd.to_datetime(df.index)
+    if getattr(idx, "tz", None) is None:
+        idx = idx.tz_localize(timezone.utc)
+    else:
+        idx = idx.tz_convert(timezone.utc)
+    out = df.copy()
+    out.index = idx
+    return out
+
+
+# =========================
+# DB helpers (CREATE/UPSERT)
+# =========================
 CREATE_SIGNALS_SQL = """
-CREATE TABLE IF NOT EXISTS signals_1m (
-  symbol TEXT NOT NULL, ts TEXT NOT NULL,
-  buy1 REAL, buy2 REAL, buy3 REAL, buy4 REAL, buy5 REAL,
-  sell1 REAL, sell2 REAL, sell3 REAL, sell4 REAL, sell5 REAL,
-  S REAL, meta_json TEXT,
+CREATE TABLE IF NOT EXISTS signals_1m(
+  symbol TEXT NOT NULL,
+  ts     TEXT NOT NULL,  -- UTC ISO8601
+  b1 REAL, b2 REAL, b3 REAL, b4 REAL, b5 REAL,
+  s1 REAL, s2 REAL, s3 REAL, s4 REAL, s5 REAL,
+  S  REAL,
   PRIMARY KEY(symbol, ts)
 );
 """
 
-def _load_bars(conn, symbol, s, e):
-    df = pd.read_sql_query("""
-        SELECT ts, open, high, low, close, volume
-        FROM bars_1m WHERE symbol=? AND ts>=? AND ts<? ORDER BY ts
-    """, conn, params=(symbol, s.isoformat(), e.isoformat()), parse_dates=["ts"])
-    if df.empty: return df
-    df = df.set_index("ts"); df = ensure_utc_index(df)
-    df["vwap"] = vwap_day(df); return df
+CREATE_FEATURES_SQL_PREFIX = """
+CREATE TABLE IF NOT EXISTS features_1m(
+  symbol TEXT NOT NULL,
+  ts     TEXT NOT NULL
+"""
+CREATE_FEATURES_SQL_SUFFIX = """,
+  PRIMARY KEY(symbol, ts)
+);
+"""
 
-def _load_fx(conn, symbol, s, e):
-    if not symbol: return pd.DataFrame()
-    df = pd.read_sql_query("""
-        SELECT ts, close, open, high, low, volume
-        FROM fx_1m WHERE symbol=? AND ts>=? AND ts<? ORDER BY ts
-    """, conn, params=(symbol, s.isoformat(), e.isoformat()), parse_dates=["ts"])
-    if df.empty: return df
-    df = df.set_index("ts"); df = ensure_utc_index(df); return df
-
-def systems_10(bars: pd.DataFrame, feat: pd.DataFrame) -> pd.DataFrame:
-    buy1 = feat[["ret1","ret3","mom_slope3"]].mean(axis=1)
-    buy2 = feat[["vwap_gap","price_above_vwap","ma_fast_slow"]].mean(axis=1)
-    buy3 = feat[["bb_pos","kelt_pos","stoch_k"]].mean(axis=1)
-    buy4 = feat[["vol_z60","vol_ratio_5_20","obv_slope"]].mean(axis=1)
-    buy5 = feat[["ret10","ret20","rsi14"]].mean(axis=1)
-
-    sell1 = 1 - feat["ret1"]
-    sell2 = 1 - feat[["vwap_gap","price_above_vwap"]].mean(axis=1)
-    sell3 = 1 - feat[["bb_pos","stoch_k","stoch_d"]].mean(axis=1)
-    sell4 = 1 - feat[["vol_z60","vol_ratio_5_20"]].mean(axis=1)
-    sell5 = 1 - feat[["ret5","rsi14"]].mean(axis=1)
-
-    df = pd.DataFrame({
-        "buy1":buy1,"buy2":buy2,"buy3":buy3,"buy4":buy4,"buy5":buy5,
-        "sell1":sell1,"sell2":sell2,"sell3":sell3,"sell4":sell4,"sell5":sell5,
-    }, index=feat.index)
-    df["S"] = df[[f"buy{i}" for i in range(1,6)]].mean(axis=1) - df[[f"sell{i}" for i in range(1,6)]].mean(axis=1)
-    return df
-
-def upsert_signals(conn, symbol, sys10, meta) -> int:
-    if sys10 is None or sys10.empty: return 0
+def upsert_signals(conn: sqlite3.Connection, symbol: str, df_sig: pd.DataFrame) -> int:
+    if df_sig.empty:
+        return 0
     conn.execute(CREATE_SIGNALS_SQL)
     rows = []
-    for ts, r in sys10.iterrows():
-        tsu = pd.Timestamp(ts)
-        tsu = tsu.tz_localize("UTC") if tsu.tzinfo is None else tsu.tz_convert("UTC")
-        rows.append((symbol, tsu.isoformat(),
-                     float(r.get("buy1",0.5)), float(r.get("buy2",0.5)), float(r.get("buy3",0.5)), float(r.get("buy4",0.5)), float(r.get("buy5",0.5)),
-                     float(r.get("sell1",0.5)), float(r.get("sell2",0.5)), float(r.get("sell3",0.5)), float(r.get("sell4",0.5)), float(r.get("sell5",0.5)),
-                     float(r.get("S",0.0)), json.dumps(meta, ensure_ascii=False)))
+    for ts, r in df_sig.iterrows():
+        rows.append((
+            symbol,
+            pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(),
+            float(r.get("b1")) if pd.notna(r.get("b1")) else None,
+            float(r.get("b2")) if pd.notna(r.get("b2")) else None,
+            float(r.get("b3")) if pd.notna(r.get("b3")) else None,
+            float(r.get("b4")) if pd.notna(r.get("b4")) else None,
+            float(r.get("b5")) if pd.notna(r.get("b5")) else None,
+            float(r.get("s1")) if pd.notna(r.get("s1")) else None,
+            float(r.get("s2")) if pd.notna(r.get("s2")) else None,
+            float(r.get("s3")) if pd.notna(r.get("s3")) else None,
+            float(r.get("s4")) if pd.notna(r.get("s4")) else None,
+            float(r.get("s5")) if pd.notna(r.get("s5")) else None,
+            float(r.get("S"))  if pd.notna(r.get("S"))  else None,
+        ))
     sql = """
-    INSERT INTO signals_1m (symbol, ts, buy1,buy2,buy3,buy4,buy5, sell1,sell2,sell3,sell4,sell5, S, meta_json)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO signals_1m(symbol, ts, b1,b2,b3,b4,b5, s1,s2,s3,s4,s5, S)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(symbol, ts) DO UPDATE SET
-      buy1=excluded.buy1, buy2=excluded.buy2, buy3=excluded.buy3, buy4=excluded.buy4, buy5=excluded.buy5,
-      sell1=excluded.sell1, sell2=excluded.sell2, sell3=excluded.sell3, sell4=excluded.sell4, sell5=excluded.sell5,
-      S=excluded.S, meta_json=excluded.meta_json
+      b1=excluded.b1, b2=excluded.b2, b3=excluded.b3, b4=excluded.b4, b5=excluded.b5,
+      s1=excluded.s1, s2=excluded.s2, s3=excluded.s3, s4=excluded.s4, s5=excluded.s5,
+      S =excluded.S
     """
-    conn.executemany(sql, rows); conn.commit(); return len(rows)
+    conn.executemany(sql, rows)
+    conn.commit()
+    return len(rows)
 
-def decide_target_date(conn, symbol, use_last, target_date_str):
-    if target_date_str: return datetime.strptime(target_date_str, "%Y-%m-%d").date()
-    if use_last:
-        row = conn.execute("SELECT ts FROM bars_1m WHERE symbol=? ORDER BY ts DESC LIMIT 1", (symbol,)).fetchone()
-        if row: return pd.to_datetime(row[0], utc=True).tz_convert(JST).date()
-    return pd.Timestamp.now(JST).date()
+def upsert_features(conn: sqlite3.Connection, symbol: str, feat: pd.DataFrame) -> int:
+    if feat.empty:
+        return 0
+    feat = feat.copy()
+    feat = ensure_utc_index(feat)
+    # 動的に列を作成
+    cols = list(feat.columns)
+    # 既に存在しない場合は CREATE
+    ddl = CREATE_FEATURES_SQL_PREFIX
+    for col in cols:
+        ddl += f",\n  \"{col}\" REAL"
+    ddl += CREATE_FEATURES_SQL_SUFFIX
+    conn.execute(ddl)
+
+    # UPSERT
+    placeholders = ",".join(["?"] * (2 + len(cols)))
+    set_clause = ",".join([f"\"{c}\"=excluded.\"{c}\"" for c in cols])
+    sql = f"""
+    INSERT INTO features_1m(symbol, ts, {",".join([f'"{c}"' for c in cols])})
+    VALUES({placeholders})
+    ON CONFLICT(symbol, ts) DO UPDATE SET {set_clause}
+    """
+    rows = []
+    for ts, r in feat.iterrows():
+        base = [symbol, pd.Timestamp(ts).tz_convert(timezone.utc).isoformat()]
+        vals = [ (float(r[c]) if pd.notna(r[c]) else None) for c in cols ]
+        rows.append(base + vals)
+    conn.executemany(sql, rows)
+    conn.commit()
+    return len(rows)
+
+
+# =========================
+# Core
+# =========================
+def load_bars(conn: sqlite3.Connection, symbol: str, start_utc: datetime, end_utc: datetime) -> pd.DataFrame:
+    q = """
+    SELECT ts, open, high, low, close, volume
+    FROM bars_1m
+    WHERE symbol=? AND ts>=? AND ts<?
+    ORDER BY ts
+    """
+    df = pd.read_sql_query(
+        q, conn,
+        params=(symbol, start_utc.isoformat(), end_utc.isoformat()),
+        parse_dates=["ts"]
+    ).set_index("ts")
+    return ensure_utc_index(df)
+
+def build_signals_from_pack2(feat_all: pd.DataFrame) -> pd.DataFrame:
+    """Pack2の *_base から 5買い/5売りの平均差で S を作る"""
+    need = ["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base",
+            "sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]
+    missing = [c for c in need if c not in feat_all.columns]
+    if missing:
+        raise KeyError(f"Pack2 base columns missing: {missing}")
+    sig = pd.DataFrame(index=feat_all.index)
+    # 0〜1 の想定（features側で01化済）
+    buys  = feat_all[["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]].clip(0,1)
+    sells = feat_all[["sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]].clip(0,1)
+    sig["b1"],sig["b2"],sig["b3"],sig["b4"],sig["b5"] = [buys.iloc[:,i] for i in range(5)]
+    sig["s1"],sig["s2"],sig["s3"],sig["s4"],sig["s5"] = [sells.iloc[:,i] for i in range(5)]
+    sig["S"] = buys.mean(axis=1) - sells.mean(axis=1)  # [-1,1]想定
+    return sig
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--use-last-session", action="store_true")
-    ap.add_argument("--target-date")
+    ap.add_argument("--target-date", help="YYYY-MM-DD（JST）")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    conn = sqlite3.connect(cfg.db_path, timeout=5_000)
+    conn = sqlite3.connect(cfg.db_path, timeout=10_000)
+
     try:
-        tgt = decide_target_date(conn, cfg.symbol, args.use_last_session, args.target_date)
-        s_utc, e_utc = jst_window_utc(tgt, tuple(map(int, cfg.jst_start.split(":"))), tuple(map(int, cfg.jst_end.split(":"))))
-        print(f"[STRATEGY] window JST {cfg.jst_start}-{cfg.jst_end} -> UTC {s_utc.isoformat()} ~ {e_utc.isoformat()} | symbol={cfg.symbol}")
+        tgt = jst_day_from_arg(args.target_date, args.use_last_session, conn, cfg.symbol)
 
-        bars = _load_bars(conn, cfg.symbol, s_utc, e_utc)
-        if bars.empty: raise RuntimeError("no bars in window")
-        fx   = _load_fx(conn, cfg.usd_jpy, s_utc, e_utc)
+        # 出力窓（JST 09:00–10:00）
+        s_h, s_m = map(int, cfg.jst_start.split(":"))
+        e_h, e_m = map(int, cfg.jst_end.split(":"))
+        out_s_utc, out_e_utc = jst_window_utc(tgt, (s_h, s_m), (e_h, e_m))
 
-        feat = compute_all(bars, fx, None)
-        sys10 = systems_10(bars, feat)
-        meta = {"symbol": cfg.symbol, "jst_window":[cfg.jst_start, cfg.jst_end], "n_features": feat.shape[1], "feature_names": list(feat.columns)}
-        n = upsert_signals(conn, cfg.symbol, sys10, meta)
-        print(f"[STRATEGY] done -> {n} rows to signals_1m")
+        # 計算窓（JST 08:55–10:05）: ウォームアップ込み
+        warm_s_utc, warm_e_utc = jst_window_utc(tgt, (8, 55), (10, 5))
+
+        print(f"[STRATEGY] window JST {cfg.jst_start}-{cfg.jst_end} -> UTC {out_s_utc.isoformat()} ~ {out_e_utc.isoformat()} | symbol={cfg.symbol}")
+
+        # 1) バー読み込み（ウォームアップ窓）
+        bars = load_bars(conn, cfg.symbol, warm_s_utc, warm_e_utc)
+        if bars.empty:
+            print("[STRATEGY][WARN] no bars in warm window -> skip")
+            return
+
+        # 2) 特徴量（Pack1/2/3）
+        feat_all = compute_packs(bars)  # index=UTC
+        if feat_all.empty:
+            print("[STRATEGY][WARN] features empty -> skip")
+            return
+
+        # 3) signals（Pack2ベース）
+        sig_all = build_signals_from_pack2(feat_all)
+
+        # 4) 出力窓にスライス（UTC）
+        sig_out = sig_all[(sig_all.index >= out_s_utc) & (sig_all.index < out_e_utc)]
+        feat_out = feat_all.loc[sig_out.index]  # 同じIndexのみ保存
+        if sig_out.empty:
+            print("[STRATEGY][WARN] no rows in output window")
+            return
+
+        # 5) 保存
+        n_sig = upsert_signals(conn, cfg.symbol, sig_out)
+        n_feat = upsert_features(conn, cfg.symbol, feat_out)
+
+        print(f"[STRATEGY] done -> {n_sig} rows to signals_1m, {n_feat} rows to features_1m")
+
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     main()
