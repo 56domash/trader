@@ -580,24 +580,6 @@ def compute_pack3(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-# =========================
-# エクスポート：3 Packをまとめる
-# =========================
-def compute_packs(df: pd.DataFrame,
-                  use_pack1: bool = True,
-                  use_pack2: bool = True,
-                  use_pack3: bool = True) -> pd.DataFrame:
-    parts = []
-    if use_pack1:
-        parts.append(compute_pack1(df))
-    if use_pack2:
-        parts.append(compute_pack2(df))
-    if use_pack3:
-        parts.append(compute_pack3(df))
-    if not parts:
-        return pd.DataFrame(index=_ensure_utc(df).index)
-    return pd.concat(parts, axis=1)
-
 
 FEATURES: list[FeatureSpec] = [
     # Momentum / Price
@@ -664,6 +646,151 @@ FEATURES: list[FeatureSpec] = [
     FeatureSpec("fx_corr20", f_fx_corr20, "fx", (-1.0, 1.0)),
     FeatureSpec("fx_corr60", f_fx_corr60, "fx", (-1.0, 1.0)),
 ]
+
+
+# === FILE: tq/features.py ===
+# ...（既存のimport, utilsなどは省略）
+
+# =========================
+# Pack4（追加：外部市場・日次・マルチTF・季節性）
+# =========================
+def compute_pack4(df: pd.DataFrame,
+                  df_fx: Optional[pd.DataFrame]=None,
+                  df_mkt: Optional[pd.DataFrame]=None) -> pd.DataFrame:
+    df = ensure_utc_index(df)
+    out = pd.DataFrame(index=df.index)
+
+    close = pd.to_numeric(df["close"], errors="coerce")
+    high  = pd.to_numeric(df["high"], errors="coerce")
+    low   = pd.to_numeric(df["low"], errors="coerce")
+    vol   = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+
+    # --- マルチタイムフレーム（5分足近似: rolling 5本）
+    out["p4_ret5m"] = _rolling_mean(close.pct_change(), 5)
+    out["p4_ret15m"] = _rolling_mean(close.pct_change(), 15)
+    out["p4_vol5m_z"] = rolling_zscore(vol.rolling(5).mean(), 60)
+    out["p4_hl_range5m"] = (high.rolling(5).max() - low.rolling(5).min()) / close.replace(0, np.nan)
+    ma5m = close.rolling(5).mean()
+    ma20m = close.rolling(20).mean()
+    out["p4_ema5m_cross"] = (ma5m - ma20m) / ma20m.replace(0, np.nan)
+
+    # --- 日次（日足っぽい特徴: JST日グループ）
+    jst = df.index.tz_convert("Asia/Tokyo")
+    g = pd.Index(jst.date)
+    day_close = close.groupby(g).transform("last")
+    day_vol = vol.groupby(g).transform("sum")
+    day_hi = high.groupby(g).transform("max")
+    day_lo = low.groupby(g).transform("min")
+
+    out["p4_daily_ret"] = (day_close - day_close.shift(1)) / day_close.shift(1)
+    out["p4_daily_vol_z"] = rolling_zscore(day_vol, 20)
+    out["p4_daily_range_pct"] = (day_hi - day_lo) / day_close.replace(0, np.nan)
+    out["p4_prev_close_gap"] = (close - day_close.shift(1)) / day_close.shift(1)
+
+    dow = pd.Series(jst.weekday, index=df.index)
+    out["p4_dow_sin"] = np.sin(2*np.pi*dow/7)
+    # 曜日cosを入れたければここで追加可能
+
+    # --- 外部市場（df_mkt: NK225_FUT, SECTOR_AUTOなど）
+    if df_mkt is not None and not df_mkt.empty:
+        mkt = df_mkt.reindex(df.index, method="nearest")
+        if "NK225_FUT" in mkt:
+            out["p4_corr_nk225"] = close.pct_change().rolling(30).corr(mkt["NK225_FUT"].pct_change())
+        if "SECTOR_AUTO" in mkt:
+            out["p4_corr_auto"] = close.pct_change().rolling(30).corr(mkt["SECTOR_AUTO"].pct_change())
+
+    # --- ダミーで他市場（例: SP500, GOLD, OIL）は0.5埋め（拡張可能）
+    out["p4_corr_sp500"] = 0.5
+    out["p4_corr_gold"] = 0.5
+    out["p4_corr_oil"] = 0.5
+    out["p4_corr_vix"] = 0.5
+    out["p4_corr_bond"] = 0.5
+
+    # --- リスク指標
+    out["p4_beta_mkt30"] = close.pct_change().rolling(30).cov(day_close.pct_change()) / (
+        day_close.pct_change().rolling(30).var().replace(0, np.nan)
+    )
+    out["p4_vol_regime_mkt"] = (close.pct_change().rolling(30).std() /
+                                close.pct_change().rolling(120).std().replace(0, np.nan))
+
+    # --- 時間・シーズナリティ
+    # mins = jst.hour*60 + jst.minute
+    # out["p4_mins_to_close"] = (60 - (mins - 9*60)).clip(0, 60) / 60.0
+    # week_of_month = ((jst.day-1)//7 + 1).astype(float)
+    # out["p4_week_of_month"] = week_of_month/4.0
+    # # holiday_dummyは簡易に週末前 = 金曜とする
+    # out["p4_holiday_dummy"] = (dow==4).astype(float)
+    # month = jst.month
+    # out["p4_month_sin"] = np.sin(2*np.pi*month/12)
+    # out["p4_month_cos"] = np.cos(2*np.pi*month/12)
+
+    # --- 時間・シーズナリティ
+    mins = pd.Series(jst.hour*60 + jst.minute, index=df.index)
+    out["p4_mins_to_close"] = (60 - (mins - 9*60)).clip(0, 60) / 60.0
+
+    week_of_month = ((jst.day-1)//7 + 1).astype(float)
+    out["p4_week_of_month"] = week_of_month/4.0
+    out["p4_holiday_dummy"] = (dow==4).astype(float)
+
+    month = jst.month
+    out["p4_month_sin"] = np.sin(2*np.pi*month/12)
+    out["p4_month_cos"] = np.cos(2*np.pi*month/12)
+
+
+    return out
+
+
+# ========= Pack4 spec =========
+PACK4 = [
+    FeatureSpec("ret5m", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_ret5m"]),
+    FeatureSpec("ret15m", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_ret15m"]),
+    FeatureSpec("vol5m_z", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_vol5m_z"]),
+    FeatureSpec("hl_range5m", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_hl_range5m"]),
+    FeatureSpec("ema5m_cross", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_ema5m_cross"]),
+    FeatureSpec("daily_ret", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_daily_ret"]),
+    FeatureSpec("daily_vol_z", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_daily_vol_z"]),
+    FeatureSpec("daily_range_pct", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_daily_range_pct"]),
+    FeatureSpec("prev_close_gap", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_prev_close_gap"]),
+    FeatureSpec("dow_sin", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_dow_sin"]),
+    FeatureSpec("corr_nk225", lambda df,fx,mkt: compute_pack4(df,fx,mkt).get("p4_corr_nk225", pd.Series(0.5, index=df.index))),
+    FeatureSpec("corr_auto", lambda df,fx,mkt: compute_pack4(df,fx,mkt).get("p4_corr_auto", pd.Series(0.5, index=df.index))),
+    FeatureSpec("corr_sp500", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_corr_sp500"]),
+    FeatureSpec("corr_gold", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_corr_gold"]),
+    FeatureSpec("corr_oil", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_corr_oil"]),
+    FeatureSpec("corr_vix", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_corr_vix"]),
+    FeatureSpec("corr_bond", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_corr_bond"]),
+    FeatureSpec("beta_mkt30", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_beta_mkt30"]),
+    FeatureSpec("vol_regime_mkt", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_vol_regime_mkt"]),
+    FeatureSpec("mins_to_close", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_mins_to_close"]),
+    FeatureSpec("week_of_month", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_week_of_month"]),
+    FeatureSpec("holiday_dummy", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_holiday_dummy"]),
+    FeatureSpec("month_sin", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_month_sin"]),
+    FeatureSpec("month_cos", lambda df,fx,mkt: compute_pack4(df,fx,mkt)["p4_month_cos"]),
+]
+
+# =========================
+# エクスポート：4 Packをまとめる
+# =========================
+def compute_packs(df: pd.DataFrame,
+                  use_pack1: bool=True,
+                  use_pack2: bool=True,
+                  use_pack3: bool=True,
+                  use_pack4: bool=True,
+                  df_fx: Optional[pd.DataFrame]=None,
+                  df_mkt: Optional[pd.DataFrame]=None) -> pd.DataFrame:
+    parts = []
+    if use_pack1:
+        parts.append(compute_pack1(df))
+    if use_pack2:
+        parts.append(compute_pack2(df))
+    if use_pack3:
+        parts.append(compute_pack3(df))
+    if use_pack4:
+        parts.append(compute_pack4(df, df_fx, df_mkt))
+    if not parts:
+        return pd.DataFrame(index=ensure_utc_index(df).index)
+    return pd.concat(parts, axis=1)
+
 
 
 def compute_all(df_bars: pd.DataFrame, df_fx: Optional[pd.DataFrame]=None, df_mkt: Optional[pd.DataFrame]=None) -> pd.DataFrame:

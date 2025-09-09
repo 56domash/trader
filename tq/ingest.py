@@ -199,3 +199,24 @@ def fetch_market_1m(period: str) -> pd.DataFrame:
     if "SECTOR_AUTO" in out.columns:
         cols.append("SECTOR_AUTO")
     return out[cols]
+
+def fetch_external_1m(period="7d"):
+    symbols = {
+        "SP500": "^GSPC",     # S&P500現物（または E-mini: ES=F）
+        "GOLD": "GC=F",       # NY金先物
+        "OIL": "CL=F",        # WTI原油
+        "VIX": "^VIX",        # VIX指数
+        "BOND10Y": "^TNX",    # 米10年債利回り
+    }
+    frames = []
+    for k, sym in symbols.items():
+        df = _yf_download(sym, interval="1m", period=period)
+        if not df.empty:
+            close = df["Close"] if "Close" in df.columns else df["close"]
+            frames.append(close.rename(k))
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, axis=1)
+    out = _to_utc_index(out)
+    out = _insert_datetime_column(out)
+    return out
