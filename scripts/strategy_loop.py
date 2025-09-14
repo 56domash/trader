@@ -32,6 +32,8 @@ class Config:
     symbol: str = "7203.T"
     jst_start: str = "09:00"
     jst_end: str = "10:00"
+    weights: dict = None
+
 
 def load_config(path: str) -> Config:
     raw = {}
@@ -44,7 +46,9 @@ def load_config(path: str) -> Config:
     c.symbol = raw.get("symbol", c.symbol)
     c.jst_start = raw.get("jst_start", c.jst_start)
     c.jst_end   = raw.get("jst_end", c.jst_end)
+    c.weights   = raw.get("weights", {"pack1":1.0,"pack2":1.0,"pack3":1.0,"pack4":1.0})
     return c
+
 
 
 # =========================
@@ -187,6 +191,19 @@ def load_bars(conn: sqlite3.Connection, symbol: str, start_utc: datetime, end_ut
     ).set_index("ts")
     return ensure_utc_index(df)
 
+def load_ext(conn: sqlite3.Connection, start_utc: datetime, end_utc: datetime) -> pd.DataFrame:
+    q = """
+    SELECT ts, symbol, close
+    FROM ext_1m
+    WHERE ts>=? AND ts<?
+    """
+    df = pd.read_sql_query(q, conn, params=(start_utc.isoformat(), end_utc.isoformat()), parse_dates=["ts"])
+    if df.empty:
+        return pd.DataFrame()
+    df = df.pivot(index="ts", columns="symbol", values="close")
+    return ensure_utc_index(df)
+
+
 def build_signals_from_pack2(feat_all: pd.DataFrame) -> pd.DataFrame:
     """Pack2の *_base から 5買い/5売りの平均差で S を作る"""
     need = ["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base",
@@ -203,32 +220,38 @@ def build_signals_from_pack2(feat_all: pd.DataFrame) -> pd.DataFrame:
     sig["S"] = buys.mean(axis=1) - sells.mean(axis=1)  # [-1,1]想定
     return sig
 
-def build_signals_from_all(feat_all: pd.DataFrame) -> pd.DataFrame:
+def build_signals_from_all(feat_all: pd.DataFrame, weights: dict) -> pd.DataFrame:
     sig = pd.DataFrame(index=feat_all.index)
 
-    # Pack2のベース買い売り
+    # Pack2
     buys = feat_all[["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]].clip(0,1)
     sells = feat_all[["sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]].clip(0,1)
     sig["b_pack2"] = buys.mean(axis=1)
     sig["s_pack2"] = sells.mean(axis=1)
 
-    # Pack1の代表（例: RSI, BB位置）
+    # Pack1
     sig["b_pack1"] = feat_all["p1_rsi14_01"]
     sig["s_pack1"] = 1 - feat_all["p1_rsi14_01"]
 
-    # Pack3の代表（例: MACD, WR）
+    # Pack3
     sig["b_pack3"] = feat_all["p3_macd_hist01"]
     sig["s_pack3"] = 1 - feat_all["p3_macd_hist01"]
 
-    # Pack4の代表（例: ret5m, corr_nk225）
+    # Pack4
     sig["b_pack4"] = (feat_all["p4_ret5m"].clip(lower=-0.01, upper=0.01) + 0.01) / 0.02
     sig["s_pack4"] = 1 - sig["b_pack4"]
 
-    # 総合S（平均）
-    sig["S"] = (sig["b_pack1"] + sig["b_pack2"] + sig["b_pack3"] + sig["b_pack4"]
-              - sig["s_pack1"] - sig["s_pack2"] - sig["s_pack3"] - sig["s_pack4"]) / 4.0
+    # 重み付き合成
+    w1,w2,w3,w4 = weights["pack1"],weights["pack2"],weights["pack3"],weights["pack4"]
+    num = (w1*(sig["b_pack1"]-sig["s_pack1"])
+         + w2*(sig["b_pack2"]-sig["s_pack2"])
+         + w3*(sig["b_pack3"]-sig["s_pack3"])
+         + w4*(sig["b_pack4"]-sig["s_pack4"]))
+    den = (w1+w2+w3+w4)
+    sig["S"] = (num/den).clip(-1,1)
 
-    return sig.clip(-1,1)
+    return sig
+
 
 
 def main():
@@ -261,15 +284,22 @@ def main():
             print("[STRATEGY][WARN] no bars in warm window -> skip")
             return
 
-        # 2) 特徴量（Pack1/2/3）
-        feat_all = compute_packs(bars)  # index=UTC
-        if feat_all.empty:
-            print("[STRATEGY][WARN] features empty -> skip")
-            return
+        # 外部データ
+        df_ext = load_ext(conn, warm_s_utc, warm_e_utc)
+
+        # 2) 特徴量（Pack1〜4）
+        feat_all = compute_packs(bars, df_mkt=df_ext)
+
+
+        # # 2) 特徴量（Pack1/2/3）
+        # feat_all = compute_packs(bars)  # index=UTC
+        # if feat_all.empty:
+        #     print("[STRATEGY][WARN] features empty -> skip")
+        #     return
 
         # 3) signals（Pack2ベース）
         # sig_all = build_signals_from_pack2(feat_all)
-        sig_all = build_signals_from_all(feat_all)
+        sig_all = build_signals_from_all(feat_all, cfg.weights)
 
         # 4) 出力窓にスライス（UTC）
         sig_out = sig_all[(sig_all.index >= out_s_utc) & (sig_all.index < out_e_utc)]

@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS fx_1m (
 );
 """
 
+
+
 def upsert_bars(conn: sqlite3.Connection, table: str, keyname: str, df: pd.DataFrame):
     if df.empty:
         print(f"[INGEST][INFO] skip empty df for {table}")
@@ -256,6 +258,35 @@ def main():
             win = pd.DataFrame()
         n1 = upsert_bars(conn, "bars_1m", "symbol", win)
         print(f"[INGEST][bars_1m] {cfg.symbol}: +{n1} rows")
+
+        # ---- 外部市場（SP500, GOLD, OIL, VIX, BOND10Y）----
+        from tq.ingest import fetch_external_1m
+        ext = fetch_external_1m(period="7d")
+        if not ext.empty:
+            win_ext = slice_window_jst(ext, start_jst, end_jst)
+            if not win_ext.empty:
+                rows = []
+                for ts, r in win_ext.iterrows():
+                    for col in ["SP500","GOLD","OIL","VIX","BOND10Y"]:
+                        if col in r and pd.notna(r[col]):
+                            rows.append((col, pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(), float(r[col])))
+                if rows:
+                    conn.execute("""
+                    CREATE TABLE IF NOT EXISTS ext_1m (
+                      symbol TEXT NOT NULL,
+                      ts     TEXT NOT NULL,
+                      close  REAL,
+                      PRIMARY KEY(symbol, ts)
+                    )
+                    """)
+                    conn.executemany(
+                        "INSERT INTO ext_1m(symbol, ts, close) VALUES(?,?,?) "
+                        "ON CONFLICT(symbol, ts) DO UPDATE SET close=excluded.close",
+                        rows
+                    )
+                    conn.commit()
+                    print(f"[INGEST][ext_1m] +{len(rows)} rows")
+
 
         # ---- 為替（任意。使わないなら config で消す）----
         if cfg.usd_jpy:
