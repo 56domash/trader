@@ -252,6 +252,60 @@ def build_signals_from_all(feat_all: pd.DataFrame, weights: dict) -> pd.DataFram
 
     return sig
 
+def build_signals_from_all10(feat_all: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    """
+    Pack1〜10に対応した重み付き合成。
+    Pack5〜Pack10はscaffoldとして0.5固定（features側で順次実装予定）。
+    """
+    sig = pd.DataFrame(index=feat_all.index)
+
+    # Pack1
+    if "p1_rsi14_01" in feat_all:
+        sig["b_pack1"] = feat_all["p1_rsi14_01"]
+        sig["s_pack1"] = 1 - feat_all["p1_rsi14_01"]
+    else:
+        sig["b_pack1"] = sig["s_pack1"] = 0.5
+
+    # Pack2
+    if all(c in feat_all.columns for c in ["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]):
+        buys  = feat_all[["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]].clip(0,1)
+        sells = feat_all[["sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]].clip(0,1)
+        sig["b_pack2"] = buys.mean(axis=1)
+        sig["s_pack2"] = sells.mean(axis=1)
+    else:
+        sig["b_pack2"] = sig["s_pack2"] = 0.5
+
+    # Pack3
+    if "p3_macd_hist01" in feat_all:
+        sig["b_pack3"] = feat_all["p3_macd_hist01"]
+        sig["s_pack3"] = 1 - feat_all["p3_macd_hist01"]
+    else:
+        sig["b_pack3"] = sig["s_pack3"] = 0.5
+
+    # Pack4
+    if "p4_ret5m" in feat_all:
+        sig["b_pack4"] = (feat_all["p4_ret5m"].clip(-0.01,0.01) + 0.01) / 0.02
+        sig["s_pack4"] = 1 - sig["b_pack4"]
+    else:
+        sig["b_pack4"] = sig["s_pack4"] = 0.5
+
+    # Pack5〜Pack10: ダミー
+    for i in range(5, 11):
+        sig[f"b_pack{i}"] = 0.5
+        sig[f"s_pack{i}"] = 0.5
+
+    # ---- 重み付き合成 ----
+    num, den = 0.0, 0.0
+    for key, w in weights.items():
+        if w == 0:
+            continue
+        b_col, s_col = f"b_{key}", f"s_{key}"
+        if b_col in sig.columns and s_col in sig.columns:
+            num += w * (sig[b_col] - sig[s_col])
+            den += w
+    sig["S"] = (num/den).clip(-1,1) if den > 0 else 0.0
+
+    return sig
 
 
 def main():
@@ -299,7 +353,8 @@ def main():
 
         # 3) signals（Pack2ベース）
         # sig_all = build_signals_from_pack2(feat_all)
-        sig_all = build_signals_from_all(feat_all, cfg.weights)
+        # sig_all = build_signals_from_all(feat_all, cfg.weights)
+        sig_all = build_signals_from_all10(feat_all, cfg.weights)
 
         # 4) 出力窓にスライス（UTC）
         sig_out = sig_all[(sig_all.index >= out_s_utc) & (sig_all.index < out_e_utc)]

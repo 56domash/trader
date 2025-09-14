@@ -21,7 +21,7 @@ jst_end: "10:00"
 
 
 # しきい値（まずはロングだけ刺さるように）
-thr_long: 0.01        # ← sampleが出した p70≈0.249 を少し下回らせる
+thr_long: 0.1        # ← sampleが出した p70≈0.249 を少し下回らせる
 thr_short: -0.50      # ← ショートは当面オフに近い値に
 ema_span: 3
 confirm_bars: 1
@@ -41,6 +41,7 @@ max_trades_per_day: 10
 # side_filter: "long"
 auto_thresholds: false     # or
 thr_mode: "fixed"
+
 # config.toyota.yaml
 db_path: ./runtime.db
 symbol: 7203.T
@@ -50,5 +51,11 @@ jst_end: "10:00"
 weights:
   pack1: 1.0
   pack2: 1.0
-  pack3: 1.0
-  pack4: 1.0
+  pack3: 0.5
+  pack4: 0.5
+  pack5: 0.0
+  pack6: 0.0
+  pack7: 0.0
+  pack8: 0.0
+  pack9: 0.0
+  pack10: 0.0
