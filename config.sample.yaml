@@ -51,11 +51,26 @@ jst_end: "10:00"
 weights:
   pack1: 1.0
   pack2: 1.0
-  pack3: 0.5
-  pack4: 0.5
-  pack5: 0.0
-  pack6: 0.0
-  pack7: 0.0
-  pack8: 0.0
-  pack9: 0.0
-  pack10: 0.0
+  pack3: 1.0
+  pack4: 1.0
+  pack5: 1.0
+  pack6: 1.0
+  pack7: 1.0
+  pack8: 1.0
+  pack9: 1.0
+  pack10: 1.0
+  pack11: 1.0
+  pack12: 1.0
+  pack8: 1.0
+  pack9: 1.0
+  pack10: 1.0
+  pack11: 1.0
+  pack12: 1.0
+  pack13: 1.0
+  pack14: 1.0
+  pack15: 1.0
+  pack16: 1.0
+  pack17: 1.0
+  pack18: 1.0
+  pack19: 1.0
+  pack20: 1.0

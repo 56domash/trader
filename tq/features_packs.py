@@ -333,7 +333,7 @@ def compute_pack4(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_pack5(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    o, h, l, c, v = df["Open"], df["High"], df["Low"], df["Close"], df["Volume"]
+    o, h, l, c, v = df["open"], df["high"], df["low"], df["close"], df["volume"]
 
     # ATR系
     atr14 = AverageTrueRange(h, l, c, window=14).average_true_range()
@@ -379,7 +379,7 @@ def compute_pack5(df: pd.DataFrame) -> pd.DataFrame:
 # ---------- Pack6: リターン分布 / 自己相関 / リスク因子（拡張） ----------
 def compute_pack6(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c = df["Close"]
+    c = df["close"]
     ret1 = c.pct_change()
 
     # Z化（EWM）
@@ -412,7 +412,7 @@ def compute_pack6(df: pd.DataFrame) -> pd.DataFrame:
 # ---------- Pack7: クロスマーケット / ベータ・相関（拡張・安全整列） ----------
 def compute_pack7(df: pd.DataFrame, df_fx: pd.DataFrame | None = None, df_mkt: pd.DataFrame | None = None) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c = df["Close"]
+    c = df["close"]
     ret = c.pct_change()
 
     def _mk(name) -> pd.Series | None:
@@ -493,7 +493,7 @@ def compute_pack8(df: pd.DataFrame) -> pd.DataFrame:
 # ---------- Pack9: レジーム/イベント・ダミー（拡張） ----------
 def compute_pack9(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c = df["Close"]
+    c = df["close"]
     ret = c.pct_change()
 
     # 簡易ボラレジーム（20分の実現ボラが中央値より高い＝高ボラ）
@@ -502,13 +502,13 @@ def compute_pack9(df: pd.DataFrame) -> pd.DataFrame:
     out["p9_regime_vol_high"] = (vol20 > med).astype(float)
 
     # レンジブレイク（20）
-    h, l = df["High"], df["Low"]
+    h, l = df["high"], df["low"]
     out["p9_break20_up"] = (h > h.rolling(20).max().shift(1)).astype(float)
     out["p9_break20_dn"] = (l < l.rolling(20).min().shift(1)).astype(float)
 
     # ギャップ近似（1分前終値との乖離）
-    out["p9_gap1m"] = (df["Open"] - df["Close"].shift(1)) / \
-        (df["Close"].shift(1) + 1e-9)
+    out["p9_gap1m"] = (df["open"] - df["close"].shift(1)) / \
+        (df["close"].shift(1) + 1e-9)
 
     # ダミー（将来のイベント拡張用の空きボックス）
     out["p9_dummy"] = 0.0
@@ -519,7 +519,7 @@ def compute_pack9(df: pd.DataFrame) -> pd.DataFrame:
 # ---------- Pack10: 運用/学習と接続する箱（改良） ----------
 def compute_pack10(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c = df["Close"]
+    c = df["close"]
 
     # 直近PnL擬似（モメンタムの累積）
     out["p10_recent_pnl"] = c.pct_change().rolling(10).sum()
@@ -540,11 +540,11 @@ def compute_pack10(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_pack11(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c = df["Close"]
+    c = df["close"]
 
     # 価格アノマリー
     out["p11_gap_open"] = (
-        df["Open"] - df["Close"].shift(1)) / df["Close"].shift(1)
+        df["open"] - df["close"].shift(1)) / df["close"].shift(1)
     out["p11_streak_up"] = (c.pct_change() > 0).astype(
         int).groupby((c.pct_change() <= 0).cumsum()).cumsum()
     out["p11_streak_down"] = (c.pct_change() < 0).astype(
@@ -555,7 +555,7 @@ def compute_pack11(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_pack12(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c, v = df["Close"], df["Volume"]
+    c, v = df["close"], df["volume"]
 
     # OBV
     ret = c.pct_change().fillna(0)
@@ -570,7 +570,7 @@ def compute_pack12(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_pack13(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    h, l, c = df["High"], df["Low"], df["Close"]
+    h, l, c = df["high"], df["low"], df["close"]
 
     # ADX
     adx = ta.trend.ADXIndicator(h, l, c, window=14).adx()
@@ -586,7 +586,7 @@ def compute_pack13(df: pd.DataFrame) -> pd.DataFrame:
 
 def compute_pack14(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
-    c = df["Close"]
+    c = df["close"]
     ret = c.pct_change()
 
     # シャープ近似
@@ -619,7 +619,7 @@ def compute_pack16(df, df_fx=None):
     if df_fx is None:
         return out
 
-    c = df["Close"]
+    c = df["close"]
 
     for pair in ["USDJPY", "EURJPY", "GBPJPY"]:
         if pair in df_fx.columns:
@@ -635,7 +635,7 @@ def compute_pack17(df, df_mkt=None):
     if df_mkt is None:
         return out
 
-    c = df["Close"]
+    c = df["close"]
 
     mapping = {
         "SP500": "sp500",
@@ -656,7 +656,7 @@ def compute_pack18(df, df_mkt=None):
     if df_mkt is None:
         return out
 
-    c = df["Close"]
+    c = df["close"]
     mapping = {
         "GOLD": "gold",
         "WTI": "oil",
@@ -676,7 +676,7 @@ def compute_pack19(df, df_mkt=None):
     if df_mkt is None:
         return out
 
-    c = df["Close"]
+    c = df["close"]
     mapping = {
         "US10Y": "us10y",
         "JP10Y": "jp10y",
@@ -696,7 +696,7 @@ def compute_pack20(df, df_mkt=None):
     if df_mkt is None:
         return out
 
-    c = df["Close"]
+    c = df["close"]
     mapping = {
         "VIX": "vix",
         "MOVE": "move",
@@ -800,4 +800,192 @@ def compute_packs(df: pd.DataFrame,
             out[c] = new[c]
         else:
             out[c] = np.nan
+    return out
+
+import numpy as np
+import pandas as pd
+
+def compute_pack_scores_from_all_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    features_packsで生成された全特徴量を対象に、
+    Packごとに buy/sell スコア (b_packN, s_packN) を生成する。
+    - 方向性を持つ特徴量は b∈[0,1] に変換して平均
+    - 方向性を持たない特徴量は自信度 (w∈[0,1]) としてゲートに利用
+    - 欠損値はニュートラル (0.5) で補完
+    """
+    out = pd.DataFrame(index=df.index)
+
+    # --- helper functions ---
+    def sigmoid(x):
+        return 1 / (1 + np.exp(-x))
+
+    def to_score(series, invert=False):
+        """数値列を0-1スコアに変換（zscore→sigmoid）"""
+        s = pd.to_numeric(series, errors="coerce")
+        if s.std(skipna=True) == 0 or s.isna().all():
+            return pd.Series(0.5, index=s.index)
+        z = (s - s.mean(skipna=True)) / (s.std(skipna=True) + 1e-9)
+        sc = sigmoid(z)
+        if invert:
+            sc = 1 - sc
+        return sc.fillna(0.5).clip(0, 1)
+
+    def direct01(series, invert=False):
+        """すでに0-1スケール済みの列をスコア化"""
+        s = pd.to_numeric(series, errors="coerce").fillna(0.5).clip(0, 1)
+        return 1 - s if invert else s
+
+    # --- Packごとの処理 ---
+    for i in range(1, 21):
+        pack_cols = [c for c in df.columns if c.startswith(f"p{i}_") or c.startswith(f"buy{i}_") or c.startswith(f"sell{i}_")]
+        if not pack_cols:
+            out[f"b_pack{i}"] = 0.5
+            out[f"s_pack{i}"] = 0.5
+            continue
+
+        b_list, w_list = [], []
+
+        for col in pack_cols:
+            col_l = col.lower()
+
+            # ---- Pack1例 ----
+            if col_l.startswith("p1_rsi") or col_l.startswith("p1_stoch") or col_l.startswith("p1_bb_pos") \
+               or col_l.startswith("p1_vwap_dist") or col_l.startswith("p1_or_pos"):
+                b_list.append(direct01(df[col]))
+            elif col_l.startswith("p1_vol_imb"):
+                b_list.append((pd.to_numeric(df[col], errors="coerce") + 1) / 2)
+            elif "bw" in col_l or "atr" in col_l or "vol_ratio" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack2 ----
+            elif col_l.startswith("buy2_"):
+                b_list.append(direct01(df[col]))
+            elif col_l.startswith("sell2_"):
+                # sell列はb/sを別途分けるがここはb_list扱いしない
+                pass
+            elif "ret" in col_l or "gap" in col_l or "ma" in col_l or "slope" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "vol" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack3 ----
+            elif "macd" in col_l or "cci" in col_l or "keltner_pos" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "wr10" in col_l:
+                b_list.append(1 - to_score(df[col]))  # 逆張り解釈
+            elif "vix" in col_l or "spike" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack4 ----
+            elif "ret" in col_l or "ema5m_cross" in col_l or "range_pos" in col_l or "prev_close_gap" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "vol" in col_l or "hl_range" in col_l or "skew" in col_l \
+                 or "mins_to_close" in col_l or "dow" in col_l or "month" in col_l \
+                 or "week" in col_l or "holiday" in col_l or "regime" in col_l:
+                w_list.append(to_score(df[col]))
+            elif "corr" in col_l or "beta" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack5 ----
+            elif "range_pos" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "atr" in col_l or "std" in col_l or "vol" in col_l or "bw" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack6 ----
+            elif "ret" in col_l or "skew" in col_l or "mdd" in col_l or "up_ratio" in col_l or "autocorr" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "downside_vol" in col_l or "vol_of_vol" in col_l or "kurt" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack7 (usdjpy) ----
+            elif "resid" in col_l:
+                b_list.append(1 - to_score(df[col]))  # 下残差→買い寄り
+            elif "corr" in col_l or "beta" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack8 ----
+            elif "mins_since_open" in col_l or "tod" in col_l or "dow" in col_l or "month" in col_l or "week" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack9 ----
+            elif "break" in col_l or "gap1m" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "regime" in col_l or "dummy" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack10 ----
+            elif "recent_pnl" in col_l or "mdd" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "ml_score" in col_l or "thr" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack11 ----
+            elif "gap_open" in col_l or "streak" in col_l:
+                b_list.append(to_score(df[col]))
+
+            # ---- Pack12 ----
+            elif "obv" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "vol_autocorr" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack13 ----
+            elif "aroon" in col_l:
+                b_list.append(to_score(df[col]))
+            elif "adx" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack14 ----
+            elif "sharpe" in col_l or "sortino" in col_l:
+                b_list.append(to_score(df[col]))
+
+            # ---- Pack15 ----
+            elif "dummy" in col_l:
+                w_list.append(to_score(df[col]))
+
+            # ---- Pack16-20 (未定義多いので中立) ----
+            else:
+                w_list.append(pd.Series(0.5, index=df.index))
+
+        # --- Pack内で集約 ---
+        if b_list:
+            b_dir = pd.concat(b_list, axis=1).mean(axis=1)
+        else:
+            b_dir = pd.Series(0.5, index=df.index)
+
+        if w_list:
+            w_val = pd.concat(w_list, axis=1).mean(axis=1)
+        else:
+            w_val = pd.Series(0.5, index=df.index)
+
+        # 自信ゲート付き合成
+        b_pack = 0.5 + (b_dir - 0.5) * (0.5 + w_val / 2)
+        s_pack = 1 - b_pack
+
+        out[f"b_pack{i}"] = b_pack.fillna(0.5).clip(0, 1)
+        out[f"s_pack{i}"] = s_pack.fillna(0.5).clip(0, 1)
+
+                # --- Pack内で集約 ---
+        if b_list:
+            b_dir = pd.concat(b_list, axis=1).mean(axis=1)
+        else:
+            b_dir = pd.Series(0.5, index=df.index)
+
+        if w_list:
+            w_val = pd.concat(w_list, axis=1).mean(axis=1)
+        else:
+            w_val = pd.Series(0.5, index=df.index)
+
+        # 🚩 NaN補正を必ず実施
+        b_dir = b_dir.fillna(0.5)
+        w_val = w_val.fillna(0.5)
+
+        b_pack = 0.5 + (b_dir - 0.5) * (0.5 + w_val / 2)
+        s_pack = 1 - b_pack
+
+        out[f"b_pack{i}"] = b_pack.fillna(0.5).clip(0, 1)
+        out[f"s_pack{i}"] = s_pack.fillna(0.5).clip(0, 1)
+
+
     return out

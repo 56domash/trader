@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yaml
 
-from tq.features import compute_packs  # ← Pack1+Pack2+Pack3 を返す
+from tq.features_packs import *  # ← Pack1+Pack2+Pack3 を返す
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -109,38 +109,186 @@ CREATE_FEATURES_SQL_SUFFIX = """,
 );
 """
 
-def upsert_signals(conn: sqlite3.Connection, symbol: str, df_sig: pd.DataFrame) -> int:
-    if df_sig.empty:
-        return 0
-    conn.execute(CREATE_SIGNALS_SQL)
-    rows = []
-    for ts, r in df_sig.iterrows():
-        rows.append((
-            symbol,
-            pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(),
-            float(r.get("b1")) if pd.notna(r.get("b1")) else None,
-            float(r.get("b2")) if pd.notna(r.get("b2")) else None,
-            float(r.get("b3")) if pd.notna(r.get("b3")) else None,
-            float(r.get("b4")) if pd.notna(r.get("b4")) else None,
-            float(r.get("b5")) if pd.notna(r.get("b5")) else None,
-            float(r.get("s1")) if pd.notna(r.get("s1")) else None,
-            float(r.get("s2")) if pd.notna(r.get("s2")) else None,
-            float(r.get("s3")) if pd.notna(r.get("s3")) else None,
-            float(r.get("s4")) if pd.notna(r.get("s4")) else None,
-            float(r.get("s5")) if pd.notna(r.get("s5")) else None,
-            float(r.get("S"))  if pd.notna(r.get("S"))  else None,
-        ))
-    sql = """
-    INSERT INTO signals_1m(symbol, ts, b1,b2,b3,b4,b5, s1,s2,s3,s4,s5, S)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(symbol, ts) DO UPDATE SET
-      b1=excluded.b1, b2=excluded.b2, b3=excluded.b3, b4=excluded.b4, b5=excluded.b5,
-      s1=excluded.s1, s2=excluded.s2, s3=excluded.s3, s4=excluded.s4, s5=excluded.s5,
-      S =excluded.S
+# def upsert_signals(conn: sqlite3.Connection, symbol: str, df_sig: pd.DataFrame) -> int:
+#     if df_sig.empty:
+#         return 0
+#     conn.execute(CREATE_SIGNALS_SQL)
+#     rows = []
+#     for ts, r in df_sig.iterrows():
+#         rows.append((
+#             symbol,
+#             pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(),
+#             float(r.get("b1")) if pd.notna(r.get("b1")) else None,
+#             float(r.get("b2")) if pd.notna(r.get("b2")) else None,
+#             float(r.get("b3")) if pd.notna(r.get("b3")) else None,
+#             float(r.get("b4")) if pd.notna(r.get("b4")) else None,
+#             float(r.get("b5")) if pd.notna(r.get("b5")) else None,
+#             float(r.get("s1")) if pd.notna(r.get("s1")) else None,
+#             float(r.get("s2")) if pd.notna(r.get("s2")) else None,
+#             float(r.get("s3")) if pd.notna(r.get("s3")) else None,
+#             float(r.get("s4")) if pd.notna(r.get("s4")) else None,
+#             float(r.get("s5")) if pd.notna(r.get("s5")) else None,
+#             float(r.get("S"))  if pd.notna(r.get("S"))  else None,
+#         ))
+#     sql = """
+#     INSERT INTO signals_1m(symbol, ts, b1,b2,b3,b4,b5, s1,s2,s3,s4,s5, S)
+#     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+#     ON CONFLICT(symbol, ts) DO UPDATE SET
+#       b1=excluded.b1, b2=excluded.b2, b3=excluded.b3, b4=excluded.b4, b5=excluded.b5,
+#       s1=excluded.s1, s2=excluded.s2, s3=excluded.s3, s4=excluded.s4, s5=excluded.s5,
+#       S =excluded.S
+#     """
+#     conn.executemany(sql, rows)
+#     conn.commit()
+#     return len(rows)
+# def upsert_signals(conn: sqlite3.Connection, symbol: str, df: pd.DataFrame):
+#     """
+#     signals_1m に Pack1〜20の b/s と S を保存
+#     """
+#     if df.empty:
+#         print("[STRATEGY][INFO] skip empty signals")
+#         return 0
+
+#     # テーブルを作り直す場合は DROP TABLE してから実行
+#     conn.execute("""
+# CREATE TABLE IF NOT EXISTS signals_1m (
+#     symbol TEXT NOT NULL,
+#     ts TEXT NOT NULL,
+#     S_buy REAL,
+#     S_sell REAL,
+#     S REAL,
+#     b_pack1 REAL, s_pack1 REAL,
+#     b_pack2 REAL, s_pack2 REAL,
+#     b_pack3 REAL, s_pack3 REAL,
+#     b_pack4 REAL, s_pack4 REAL,
+#     b_pack5 REAL, s_pack5 REAL,
+#     b_pack6 REAL, s_pack6 REAL,
+#     b_pack7 REAL, s_pack7 REAL,
+#     b_pack8 REAL, s_pack8 REAL,
+#     b_pack9 REAL, s_pack9 REAL,
+#     b_pack10 REAL, s_pack10 REAL,
+#     b_pack11 REAL, s_pack11 REAL,
+#     b_pack12 REAL, s_pack12 REAL,
+#     b_pack13 REAL, s_pack13 REAL,
+#     b_pack14 REAL, s_pack14 REAL,
+#     b_pack15 REAL, s_pack15 REAL,
+#     b_pack16 REAL, s_pack16 REAL,
+#     b_pack17 REAL, s_pack17 REAL,
+#     b_pack18 REAL, s_pack18 REAL,
+#     b_pack19 REAL, s_pack19 REAL,
+#     b_pack20 REAL, s_pack20 REAL,
+#     PRIMARY KEY (symbol, ts)
+#     );
+#     """)
+
+#     # DataFrameから行を作る
+#     rows = []
+#     for ts, r in df.iterrows():
+#         row = [
+#             symbol,
+#             pd.Timestamp(ts).tz_convert("UTC").isoformat(),
+#             float(r.get("S_buy", None)) if pd.notna(r.get("S_buy", None)) else None,
+#             float(r.get("S_sell", None)) if pd.notna(r.get("S_sell", None)) else None,
+#             float(r.get("S", None)) if pd.notna(r.get("S", None)) else None,
+#         ]
+#         # b_pack1〜20, s_pack1〜20 を順番に追加
+#         for i in range(1, 21):
+#             row.append(float(r.get(f"b_pack{i}", None)) if pd.notna(r.get(f"b_pack{i}", None)) else None)
+#             row.append(float(r.get(f"s_pack{i}", None)) if pd.notna(r.get(f"s_pack{i}", None)) else None)
+#         rows.append(row)
+
+#     placeholders = ",".join(["?"] * (3 + 2 * 20 + 2))  # symbol, ts, S_buy, S_sell, S + 40列
+#     sql = f"""
+#     INSERT INTO signals_1m VALUES ({placeholders})
+#     ON CONFLICT(symbol, ts) DO UPDATE SET
+#       S_buy=excluded.S_buy,
+#       S_sell=excluded.S_sell,
+#       S=excluded.S,
+#       {", ".join([f"b_pack{i}=excluded.b_pack{i}, s_pack{i}=excluded.s_pack{i}" for i in range(1,21)])}
+#     """
+#     conn.executemany(sql, rows)
+#     conn.commit()
+#     return len(rows)
+
+def upsert_signals(conn: sqlite3.Connection, symbol: str, sig_out: pd.DataFrame):
     """
+    signals_1m にシグナルを upsert する
+    - S_buy, S_sell, S
+    - b_pack1..20, s_pack1..20
+    - w_pack1..20 (初期値=1.0)
+    """
+    if sig_out.empty:
+        print("[STRATEGY][INFO] skip empty df for signals_1m")
+        return 0
+
+    # signals_1m テーブル作成（なければ）
+    cols = []
+    for i in range(1, 21):
+        cols.append(f"b_pack{i} REAL")
+    for i in range(1, 21):
+        cols.append(f"s_pack{i} REAL")
+    for i in range(1, 21):
+        cols.append(f"w_pack{i} REAL")
+
+    conn.execute(f"""
+    CREATE TABLE IF NOT EXISTS signals_1m (
+        symbol TEXT,
+        ts TEXT,
+        S_buy REAL,
+        S_sell REAL,
+        S REAL,
+        {", ".join(cols)},
+        PRIMARY KEY(symbol, ts)
+    )
+    """)
+
+    # SQL 構築
+    insert_cols = ["symbol", "ts", "S_buy", "S_sell", "S"]
+    for i in range(1, 21):
+        insert_cols.append(f"b_pack{i}")
+    for i in range(1, 21):
+        insert_cols.append(f"s_pack{i}")
+    for i in range(1, 21):
+        insert_cols.append(f"w_pack{i}")
+
+    placeholders = ",".join(["?"] * len(insert_cols))
+
+    update_cols = [f"{c}=excluded.{c}" for c in insert_cols if c not in ("symbol", "ts")]
+
+    sql = f"""
+    INSERT INTO signals_1m ({",".join(insert_cols)})
+    VALUES ({placeholders})
+    ON CONFLICT(symbol, ts) DO UPDATE SET
+    {",".join(update_cols)}
+    """
+
+    # rows 構築
+    rows = []
+    for ts, r in sig_out.iterrows():
+        row = [
+            symbol,
+            pd.Timestamp(ts).isoformat(),
+            r.get("S_buy"),
+            r.get("S_sell"),
+            r.get("S"),
+        ]
+        # b_pack
+        for i in range(1, 21):
+            row.append(r.get(f"b_pack{i}", None))
+        # s_pack
+        for i in range(1, 21):
+            row.append(r.get(f"s_pack{i}", None))
+        # w_pack (初期は全部1.0)
+        for i in range(1, 21):
+            row.append(1.0)
+
+        rows.append(tuple(row))
+
     conn.executemany(sql, rows)
     conn.commit()
     return len(rows)
+
+
 
 def upsert_features(conn: sqlite3.Connection, symbol: str, feat: pd.DataFrame) -> int:
     if feat.empty:
@@ -252,6 +400,91 @@ def build_signals_from_all(feat_all: pd.DataFrame, weights: dict) -> pd.DataFram
 
     return sig
 
+# def build_signals_from_all20(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+#     """
+#     Pack1〜20 の特徴量からシグナルを合成する
+#     - b_packN / s_packN を作成
+#     - NaNは0.5埋め
+#     - weightsで加重平均（なければデフォルト=1）
+#     """
+#     out = pd.DataFrame(index=df.index)
+
+#     # 個別Packごとのbuy/sellスコアを作成
+#     for i in range(1, 21):
+#         col = f"pack{i}"
+#         if col in df.columns:
+#             # NaNは0.5埋め
+#             b = df[col].fillna(0.5)
+#             s = 1.0 - b
+#             out[f"b_{col}"] = b
+#             out[f"s_{col}"] = s
+
+#     # Packごとの重みを正規化して合成
+#     bcols = [c for c in out.columns if c.startswith("b_")]
+#     scols = [c for c in out.columns if c.startswith("s_")]
+
+#     wb = []
+#     for c in bcols:
+#         pack = c.replace("b_", "")
+#         wb.append(weights.get(pack, 1.0))  # デフォルト重み=1.0
+#     ws = wb  # buyとsellは同じ重みで
+
+#     b_vals = out[bcols].multiply(wb, axis=1).sum(axis=1) / sum(wb)
+#     s_vals = out[scols].multiply(ws, axis=1).sum(axis=1) / sum(ws)
+
+#     out["S_buy"] = b_vals
+#     out["S_sell"] = s_vals
+#     out["S"] = out["S_buy"] - out["S_sell"]
+
+#     return out
+
+# def build_signals_from_all20(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+#     out = pd.DataFrame(index=df.index)
+
+#     b_cols = [f"b_pack{i}" for i in range(1, 21)]
+#     s_cols = [f"s_pack{i}" for i in range(1, 21)]
+
+#     # 🚩 NaNを必ず0.5で補正
+#     df[b_cols] = df[b_cols].fillna(0.5)
+#     df[s_cols] = df[s_cols].fillna(0.5)
+
+#     # 加重平均
+#     b_score = sum(weights.get(f"pack{i}", 1.0) * df[f"b_pack{i}"] for i in range(1, 21))
+#     s_score = sum(weights.get(f"pack{i}", 1.0) * df[f"s_pack{i}"] for i in range(1, 21))
+#     w_total = sum(weights.get(f"pack{i}", 1.0) for i in range(1, 21))
+
+#     out["S_buy"] = (b_score / w_total).fillna(0.5)
+#     out["S_sell"] = (s_score / w_total).fillna(0.5)
+#     out["S"] = out["S_buy"] - out["S_sell"]
+
+#     return out
+
+def build_signals_from_all20(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    out = pd.DataFrame(index=df.index)
+
+    b_cols = [f"b_pack{i}" for i in range(1, 21)]
+    s_cols = [f"s_pack{i}" for i in range(1, 21)]
+
+    # 🚩 NaNを必ず0.5で補正
+    df[b_cols] = df[b_cols].fillna(0.5)
+    df[s_cols] = df[s_cols].fillna(0.5)
+
+    # 加重平均
+    b_score = sum(weights.get(f"pack{i}", 1.0) * df[f"b_pack{i}"] for i in range(1, 21))
+    s_score = sum(weights.get(f"pack{i}", 1.0) * df[f"s_pack{i}"] for i in range(1, 21))
+    w_total = sum(weights.get(f"pack{i}", 1.0) for i in range(1, 21))
+
+    out["S_buy"] = (b_score / w_total).fillna(0.5)
+    out["S_sell"] = (s_score / w_total).fillna(0.5)
+    out["S"] = out["S_buy"] - out["S_sell"]
+
+    # 🚩 各 Pack の b/s もそのまま保存
+    for i in range(1, 21):
+        out[f"b_pack{i}"] = df[f"b_pack{i}"].fillna(0.5).clip(0, 1)
+        out[f"s_pack{i}"] = df[f"s_pack{i}"].fillna(0.5).clip(0, 1)
+
+    return out
+
 def build_signals_from_all10(feat_all: pd.DataFrame, weights: dict) -> pd.DataFrame:
     """
     Pack1〜10に対応した重み付き合成。
@@ -342,26 +575,25 @@ def main():
         df_ext = load_ext(conn, warm_s_utc, warm_e_utc)
 
         # 2) 特徴量（Pack1〜4）
+        # feat_all = compute_packs(bars, df_mkt=df_ext)
+
+        # sig_all = build_signals_from_all20(feat_all, cfg.weights)
+
         feat_all = compute_packs(bars, df_mkt=df_ext)
+        pack_scores = compute_pack_scores_from_all_features(feat_all)
+        sig_out = build_signals_from_all20(pack_scores, cfg.weights)
 
-
-        # # 2) 特徴量（Pack1/2/3）
-        # feat_all = compute_packs(bars)  # index=UTC
-        # if feat_all.empty:
-        #     print("[STRATEGY][WARN] features empty -> skip")
-        #     return
-
-        # 3) signals（Pack2ベース）
-        # sig_all = build_signals_from_pack2(feat_all)
-        # sig_all = build_signals_from_all(feat_all, cfg.weights)
-        sig_all = build_signals_from_all10(feat_all, cfg.weights)
 
         # 4) 出力窓にスライス（UTC）
-        sig_out = sig_all[(sig_all.index >= out_s_utc) & (sig_all.index < out_e_utc)]
+        # sig_out = sig_all[(sig_all.index >= out_s_utc) & (sig_all.index < out_e_utc)]
         feat_out = feat_all.loc[sig_out.index]  # 同じIndexのみ保存
         if sig_out.empty:
             print("[STRATEGY][WARN] no rows in output window")
             return
+
+
+        print("[DEBUG] sig_out sample:")
+        print(sig_out.head().to_string())
 
         # 5) 保存
         n_sig = upsert_signals(conn, cfg.symbol, sig_out)
