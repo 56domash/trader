@@ -19,6 +19,12 @@ symbol: "7203.T"          # ←ここだけ 7203.T に戻す
 jst_start: "09:00"
 jst_end: "10:00"
 
+thresholds:
+  thr_long: 0.1      # ロングは今のまま
+  thr_short: -0.05   # ショートを緩める
+  exit_long: 0.0     # 0 を割ったら利確/損切り
+  exit_short: 0.0
+
 
 # しきい値（まずはロングだけ刺さるように）
 thr_long: 0.1        # ← sampleが出した p70≈0.249 を少し下回らせる
@@ -74,3 +80,8 @@ weights:
   pack18: 1.0
   pack19: 1.0
   pack20: 1.0
+
+thr_long: 0.1      # ロングは今のまま
+thr_short: -0.05   # ショートを緩める
+exit_long: 0.0     # 0 を割ったら利確/損切り
+exit_short: 0.0

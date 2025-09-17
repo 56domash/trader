@@ -601,112 +601,192 @@ def compute_pack14(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# ===== helpers: スコア整形（0.0〜1.0） =====================================
+
+
+def _to_01(x: pd.Series, z_clip: float = 2.5) -> pd.Series:
+    """連続値→0..1（Zスコアをロジスティックに通す）"""
+    x = x.astype(float)
+    mu = x.rolling(120, min_periods=10).mean()
+    sd = x.rolling(120, min_periods=10).std().replace(0, np.nan)
+    z = (x - mu) / sd
+    z = z.clip(-z_clip, z_clip)
+    # ロジスティックで 0..1 へ
+    return (1.0 / (1.0 + np.exp(-z))).fillna(0.5).clip(0.0, 1.0)
+
+
+def _score_from_sign(val: pd.Series, k: float = 1.0) -> pd.Series:
+    """符号の正負→0..1（正=Buy寄り、負=Sell寄り）。kは傾き"""
+    val = val.astype(float)
+    z = val.clip(-3, 3) * k
+    return (1.0 / (1.0 + np.exp(-z))).fillna(0.5).clip(0.0, 1.0)
+
+
+def _mid(val: float = 0.5, idx=None) -> pd.Series:
+    return pd.Series(val, index=idx)
+
+# ===== Pack15〜20: 実装するが weight=0 で寄与オフ ===========================
+
+
 def compute_pack15(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pack15: カレンダー季節性（例：金曜/末日ダミー/祝日）
+      - 金曜(週末手仕舞い)はやや Sell 寄り
+      - 月末(EoM)はやや Buy 寄り
+      - 祝日ダミーは中立寄せ（ノイズ回避）
+    """
     out = pd.DataFrame(index=df.index)
-    idx = df.index
+    dow_sin = df.get("p8_dow_sin")
+    friday = df.get("p15_friday_dummy")
+    eom = df.get("p15_eom_dummy")
+    holiday = df.get("p4_holiday_dummy")
 
-    # 月末/週末 dummy
-    out["p15_eom_dummy"] = (idx.is_month_end).astype(int)
-    out["p15_friday_dummy"] = (idx.dayofweek == 4).astype(int)
+    b = _mid(0.5, df.index)
+    s = _mid(0.5, df.index)
 
-    return out
+    if friday is not None:
+        s = s + (friday.fillna(0) * 0.05)  # 金曜は Sell+0.05
+    if eom is not None:
+        b = b + (eom.fillna(0) * 0.05)     # 月末は Buy+0.05
+    if holiday is not None:
+        # 祝日ダミーは中立側に寄せる（過剰反応の抑制）
+        damp = (holiday.fillna(0) * 0.5)
+        b = 0.5 + (b - 0.5) * (1.0 - damp * 0.5)
+        s = 0.5 + (s - 0.5) * (1.0 - damp * 0.5)
 
-# ========= Pack16: 為替相関 =========
-
-
-def compute_pack16(df, df_fx=None):
-    out = pd.DataFrame(index=df.index)
-    if df_fx is None:
-        return out
-
-    c = df["close"]
-
-    for pair in ["USDJPY", "EURJPY", "GBPJPY"]:
-        if pair in df_fx.columns:
-            out[f"p16_corr_{pair.lower()}"] = (
-                c.pct_change().rolling(60).corr(df_fx[pair].pct_change())
-            )
-    return out
-
-
-# ========= Pack17: 米国株相関 =========
-def compute_pack17(df, df_mkt=None):
-    out = pd.DataFrame(index=df.index)
-    if df_mkt is None:
-        return out
-
-    c = df["close"]
-
-    mapping = {
-        "SP500": "sp500",
-        "DOW": "dowjones",
-        "NDX": "nasdaq100",
-    }
-    for key, name in mapping.items():
-        if key in df_mkt.columns:
-            out[f"p17_corr_{name}"] = (
-                c.pct_change().rolling(60).corr(df_mkt[key].pct_change())
-            )
+    out["b_pack15"] = b.clip(0, 1)
+    out["s_pack15"] = s.clip(0, 1)
+    out["w_pack15"] = 0.0  # ← 寄与オフ
     return out
 
 
-# ========= Pack18: コモディティ相関 =========
-def compute_pack18(df, df_mkt=None):
+def compute_pack16(df: pd.DataFrame, df_fx=None, df_mkt=None) -> pd.DataFrame:
+    """
+    Pack16: ボラ/出来高レジーム
+      - 低ボラ・低出来高 → Buy寄り（逆張りしやすい）
+      - 高ボラ・高出来高 → Sell寄り（リスク回避）
+    """
     out = pd.DataFrame(index=df.index)
-    if df_mkt is None:
-        return out
+    vol_gk = df.get("p5_vol_gk20")
+    vol_pk = df.get("p5_vol_pk20")
+    atr_n = df.get("p5_atr14_n")
+    volz = df.get("p2_vol_z01")
 
-    c = df["close"]
-    mapping = {
-        "GOLD": "gold",
-        "WTI": "oil",
-        "COPPER": "copper",
-    }
-    for key, name in mapping.items():
-        if key in df_mkt.columns:
-            out[f"p18_corr_{name}"] = (
-                c.pct_change().rolling(60).corr(df_mkt[key].pct_change())
-            )
+    # レジーム強度（大きいほどリスク高い → Sell寄り）
+    risk = pd.concat([
+        _to_01(vol_gk) if vol_gk is not None else _mid(0.5, df.index),
+        _to_01(vol_pk) if vol_pk is not None else _mid(0.5, df.index),
+        _to_01(atr_n) if atr_n is not None else _mid(0.5, df.index),
+        volz.fillna(0.5) if volz is not None else _mid(0.5, df.index),
+    ], axis=1).mean(axis=1)
+
+    s = risk
+    b = 1.0 - risk
+
+    out["b_pack16"] = b.clip(0, 1)
+    out["s_pack16"] = s.clip(0, 1)
+    out["w_pack16"] = 0.0
     return out
 
 
-# ========= Pack19: 金利・債券相関 =========
-def compute_pack19(df, df_mkt=None):
+def compute_pack17(df: pd.DataFrame, df_fx=None, df_mkt=None) -> pd.DataFrame:
+    """
+    Pack17: トレンド持続/反転（ストリーク×小さなリバーサル）
+      - 連続陽線が多い→短期的には反転(Sell)を少し意識
+      - 連続陰線が多い→反転(Buy)を少し意識
+    """
     out = pd.DataFrame(index=df.index)
-    if df_mkt is None:
-        return out
+    # 既存特徴: 連騰/連敗カウント（あれば使う）
+    streak_up = df.get("p11_streak_up")
+    streak_dn = df.get("p11_streak_down")
 
-    c = df["close"]
-    mapping = {
-        "US10Y": "us10y",
-        "JP10Y": "jp10y",
-        "DE10Y": "de10y",
-    }
-    for key, name in mapping.items():
-        if key in df_mkt.columns:
-            out[f"p19_corr_{name}"] = (
-                c.pct_change().rolling(60).corr(df_mkt[key].pct_change())
-            )
+    # 連騰が強いほど Sell、連敗が強いほど Buy
+    sell_bias = _to_01(
+        streak_up) if streak_up is not None else _mid(0.5, df.index)
+    buy_bias = _to_01(
+        streak_dn) if streak_dn is not None else _mid(0.5, df.index)
+
+    # 過剰反応を防ぐため弱めにブレンド
+    b = 0.5 * (0.5) + 0.5 * buy_bias
+    s = 0.5 * (0.5) + 0.5 * sell_bias
+
+    out["b_pack17"] = b.clip(0, 1)
+    out["s_pack17"] = s.clip(0, 1)
+    out["w_pack17"] = 0.0
     return out
 
 
-# ========= Pack20: VIX & リスク指数相関 =========
-def compute_pack20(df, df_mkt=None):
+def compute_pack18(df: pd.DataFrame, df_fx=None, df_mkt=None) -> pd.DataFrame:
+    """
+    Pack18: クロスマーケット相関（例：金との相関）
+      - p18_corr_gold が正→リスク回避環境（Sell寄り）
+      - 負→逆行・分散が効く（Buy寄り）
+    """
     out = pd.DataFrame(index=df.index)
-    if df_mkt is None:
-        return out
+    corr_gold = df.get("p18_corr_gold")
 
-    c = df["close"]
-    mapping = {
-        "VIX": "vix",
-        "MOVE": "move",
-        "DXY": "dxy",
-    }
-    for key, name in mapping.items():
-        if key in df_mkt.columns:
-            out[f"p20_corr_{name}"] = (
-                c.pct_change().rolling(60).corr(df_mkt[key].pct_change())
-            )
+    if corr_gold is None:
+        b = _mid(0.5, df.index)
+        s = _mid(0.5, df.index)
+    else:
+        # 正相関が強いほど Sell、負相関が強いほど Buy
+        s = _to_01(corr_gold)
+        b = 1.0 - s
+
+    out["b_pack18"] = b.clip(0, 1)
+    out["s_pack18"] = s.clip(0, 1)
+    out["w_pack18"] = 0.0
+    return out
+
+
+def compute_pack19(df: pd.DataFrame, df_fx=None, df_mkt=None) -> pd.DataFrame:
+    """
+    Pack19: リスク調整リターン（Sharpe/Sortino 近傍の短期評価）
+      - Sharpe/Sortino が高い → Buy寄り
+      - 低い/負 → Sell 寄り
+    """
+    out = pd.DataFrame(index=df.index)
+    sharpe = df.get("p14_sharpe20")
+    sortino = df.get("p14_sortino20")
+
+    pos = pd.concat([
+        _to_01(sharpe) if sharpe is not None else _mid(0.5, df.index),
+        _to_01(sortino) if sortino is not None else _mid(0.5, df.index),
+    ], axis=1).mean(axis=1)
+
+    b = pos
+    s = 1.0 - pos
+
+    out["b_pack19"] = b.clip(0, 1)
+    out["s_pack19"] = s.clip(0, 1)
+    out["w_pack19"] = 0.0
+    return out
+
+
+def compute_pack20(df: pd.DataFrame, df_fx=None, df_mkt=None) -> pd.DataFrame:
+    """
+    Pack20: リスクイベント・異常バーの中立化（ゲート）
+      - ATRやボラが極端に高いときは 0.5 に近づける
+    """
+    out = pd.DataFrame(index=df.index)
+    atr_n = df.get("p5_atr14_n")
+    volpk = df.get("p5_vol_pk20")
+
+    risk = pd.concat([
+        _to_01(atr_n) if atr_n is not None else _mid(0.5, df.index),
+        _to_01(volpk) if volpk is not None else _mid(0.5, df.index),
+    ], axis=1).mean(axis=1)
+
+    # リスクが高いほど中立に寄せる
+    strength = (1.0 - risk)  # 低リスク→1.0, 高リスク→0.0
+    b_raw = _mid(0.5, df.index)
+    s_raw = _mid(0.5, df.index)
+    b = 0.5 + (b_raw - 0.5) * strength
+    s = 0.5 + (s_raw - 0.5) * strength
+
+    out["b_pack20"] = b.clip(0, 1)
+    out["s_pack20"] = s.clip(0, 1)
+    out["w_pack20"] = 0.0
     return out
 
 
@@ -802,8 +882,6 @@ def compute_packs(df: pd.DataFrame,
             out[c] = np.nan
     return out
 
-import numpy as np
-import pandas as pd
 
 def compute_pack_scores_from_all_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -837,7 +915,8 @@ def compute_pack_scores_from_all_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- Packごとの処理 ---
     for i in range(1, 21):
-        pack_cols = [c for c in df.columns if c.startswith(f"p{i}_") or c.startswith(f"buy{i}_") or c.startswith(f"sell{i}_")]
+        pack_cols = [c for c in df.columns if c.startswith(
+            f"p{i}_") or c.startswith(f"buy{i}_") or c.startswith(f"sell{i}_")]
         if not pack_cols:
             out[f"b_pack{i}"] = 0.5
             out[f"s_pack{i}"] = 0.5
@@ -853,7 +932,8 @@ def compute_pack_scores_from_all_features(df: pd.DataFrame) -> pd.DataFrame:
                or col_l.startswith("p1_vwap_dist") or col_l.startswith("p1_or_pos"):
                 b_list.append(direct01(df[col]))
             elif col_l.startswith("p1_vol_imb"):
-                b_list.append((pd.to_numeric(df[col], errors="coerce") + 1) / 2)
+                b_list.append(
+                    (pd.to_numeric(df[col], errors="coerce") + 1) / 2)
             elif "bw" in col_l or "atr" in col_l or "vol_ratio" in col_l:
                 w_list.append(to_score(df[col]))
 
@@ -966,7 +1046,7 @@ def compute_pack_scores_from_all_features(df: pd.DataFrame) -> pd.DataFrame:
         out[f"b_pack{i}"] = b_pack.fillna(0.5).clip(0, 1)
         out[f"s_pack{i}"] = s_pack.fillna(0.5).clip(0, 1)
 
-                # --- Pack内で集約 ---
+        # --- Pack内で集約 ---
         if b_list:
             b_dir = pd.concat(b_list, axis=1).mean(axis=1)
         else:
@@ -986,6 +1066,5 @@ def compute_pack_scores_from_all_features(df: pd.DataFrame) -> pd.DataFrame:
 
         out[f"b_pack{i}"] = b_pack.fillna(0.5).clip(0, 1)
         out[f"s_pack{i}"] = s_pack.fillna(0.5).clip(0, 1)
-
 
     return out
