@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+from tq.features import PACK3  # すでにALL_SPECSに含めるならこのimportは不要
 
 import argparse
 import sqlite3
@@ -16,6 +17,8 @@ JST = ZoneInfo("Asia/Tokyo")
 # =============================================================================
 # Config
 # =============================================================================
+
+
 @dataclass
 class Config:
     db_path: str = "./runtime.db"
@@ -48,25 +51,35 @@ class Config:
     ttl_min: int = 8
     fee_rate: float = 0.0002  # 約定ごとに price*qty*fee_rate
 
+
 def _maybe_float(x, default):
     try:
         return float(x)
     except Exception:
         return default
 
-def load_config(path: str) -> Config:
+
+def load_config(path: str, case: Optional[str] = None) -> Config:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
+
+    # case指定ありなら、そのブロックを掘り出す
+    if case is not None:
+        if case not in raw:
+            raise ValueError(f"Case '{case}' not found in {path}")
+        raw = raw[case] or {}
+
     c = Config()
     c.db_path = raw.get("db_path", c.db_path)
     c.symbol = raw.get("symbol", c.symbol)
     c.jst_start = raw.get("jst_start", c.jst_start)
-    c.jst_end   = raw.get("jst_end", c.jst_end)
+    c.jst_end = raw.get("jst_end", c.jst_end)
 
-    c.thr_long  = _maybe_float(raw.get("thr_long", c.thr_long), c.thr_long)
+    c.thr_long = _maybe_float(raw.get("thr_long", c.thr_long), c.thr_long)
     c.thr_short = _maybe_float(raw.get("thr_short", c.thr_short), c.thr_short)
-    c.exit_long  = _maybe_float(raw.get("exit_long", c.exit_long), c.exit_long)
-    c.exit_short = _maybe_float(raw.get("exit_short", c.exit_short), c.exit_short)
+    c.exit_long = _maybe_float(raw.get("exit_long", c.exit_long), c.exit_long)
+    c.exit_short = _maybe_float(
+        raw.get("exit_short", c.exit_short), c.exit_short)
 
     c.ema_span = int(raw.get("ema_span", c.ema_span))
     c.confirm_bars = int(raw.get("confirm_bars", c.confirm_bars))
@@ -74,27 +87,35 @@ def load_config(path: str) -> Config:
     c.min_edge = _maybe_float(raw.get("min_edge", c.min_edge), c.min_edge)
     c.min_slope = _maybe_float(raw.get("min_slope", c.min_slope), c.min_slope)
     c.cooldown_bars = int(raw.get("cooldown_bars", c.cooldown_bars))
-    c.max_trades_per_day = int(raw.get("max_trades_per_day", c.max_trades_per_day))
+    c.max_trades_per_day = int(
+        raw.get("max_trades_per_day", c.max_trades_per_day))
     c.side_filter = str(raw.get("side_filter", c.side_filter)).lower()
 
-    # null で無効にする（空文字は無効扱いへ寄せる）
     sub_start = raw.get("sub_start", None)
-    sub_end   = raw.get("sub_end", None)
+    sub_end = raw.get("sub_end", None)
     c.sub_start = sub_start if (sub_start and str(sub_start).strip()) else None
-    c.sub_end   = sub_end if (sub_end and str(sub_end).strip()) else None
+    c.sub_end = sub_end if (sub_end and str(sub_end).strip()) else None
 
     c.lot_size = int(raw.get("lot_size", c.lot_size))
     c.ttl_min = int(raw.get("ttl_min", c.ttl_min))
     c.fee_rate = _maybe_float(raw.get("fee_rate", c.fee_rate), c.fee_rate)
+
+    # case名を記録（後で DB に保存したりログに残せるように）
+    setattr(c, "_case_name", case or "default")
+
     return c
+
 
 # =============================================================================
 # Time helpers
 # =============================================================================
+
+
 def _to_jst(ts_utc: datetime) -> datetime:
     if ts_utc.tzinfo is None:
         ts_utc = ts_utc.replace(tzinfo=timezone.utc)
     return ts_utc.astimezone(JST)
+
 
 def _as_utc(ts) -> datetime:
     ts = pd.Timestamp(ts)
@@ -102,14 +123,17 @@ def _as_utc(ts) -> datetime:
         return ts.tz_localize("UTC").to_pydatetime()
     return ts.tz_convert("UTC").to_pydatetime()
 
+
 def _hmm_to_time(s: str) -> time:
     hh, mm = map(int, s.split(":"))
     return time(hh, mm)
+
 
 def jst_window_utc(day_jst: date, start_hm: str, end_hm: str) -> Tuple[datetime, datetime]:
     s_jst = datetime.combine(day_jst, _hmm_to_time(start_hm), JST)
     e_jst = datetime.combine(day_jst, _hmm_to_time(end_hm), JST)
     return s_jst.astimezone(timezone.utc), e_jst.astimezone(timezone.utc)
+
 
 def decide_target_date(conn: sqlite3.Connection, symbol: str,
                        use_last_session: bool,
@@ -128,6 +152,8 @@ def decide_target_date(conn: sqlite3.Connection, symbol: str,
 # =============================================================================
 # DB helpers
 # =============================================================================
+
+
 def ensure_tables(conn: sqlite3.Connection):
     conn.execute("""
     CREATE TABLE IF NOT EXISTS fills_1m (
@@ -145,6 +171,24 @@ def ensure_tables(conn: sqlite3.Connection):
     """)
     conn.commit()
 
+    # 既存の fills_1m などのCREATE文があるはず
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS trader_state_1m (
+        symbol TEXT,
+        ts TEXT,
+        S_ema REAL,
+        can_long INTEGER,
+        can_short INTEGER,
+        below_run INTEGER,
+        above_run INTEGER,
+        pos INTEGER,
+        case_name TEXT,
+        PRIMARY KEY (symbol, ts, case_name)
+    )
+    """)
+    conn.commit()
+
+
 def read_signals(conn: sqlite3.Connection, symbol: str, s_utc: datetime, e_utc: datetime) -> pd.DataFrame:
     q = """
     SELECT ts, S
@@ -158,6 +202,7 @@ def read_signals(conn: sqlite3.Connection, symbol: str, s_utc: datetime, e_utc: 
         return df
     df.set_index("ts", inplace=True)
     return df
+
 
 def read_prices(conn: sqlite3.Connection, symbol: str, s_utc: datetime, e_utc: datetime) -> pd.DataFrame:
     q = """
@@ -173,6 +218,7 @@ def read_prices(conn: sqlite3.Connection, symbol: str, s_utc: datetime, e_utc: d
     px.set_index("ts", inplace=True)
     return px
 
+
 def emit(conn: sqlite3.Connection, symbol: str, ts, side, action, price, qty, pnl, position, note):
     conn.execute(
         """
@@ -187,18 +233,23 @@ def emit(conn: sqlite3.Connection, symbol: str, ts, side, action, price, qty, pn
 # =============================================================================
 # Debug helpers
 # =============================================================================
+
+
 def _fmt_jst(ts_utc: datetime) -> str:
     return _to_jst(ts_utc).strftime("%H:%M")
+
 
 def _dbg_bar(ts, s, prev_s, thrL, thrS, below_run, above_run,
              in_subwin, on_cooldown, vwap_ok, verbose, cfg: Config):
     if not verbose:
         return
     prev_txt = "nan" if prev_s is None else f"{prev_s:.3f}"
-    cross_up   = (prev_s is not None and prev_s < thrL and s >= thrL)
+    cross_up = (prev_s is not None and prev_s < thrL and s >= thrL)
     cross_down = (prev_s is not None and prev_s > thrS and s <= thrS)
-    can_long  = (below_run >= max(1, cfg.confirm_bars)) and (s >= thrL + cfg.min_edge) and (prev_s is not None and (s - prev_s) >= cfg.min_slope)
-    can_short = (above_run >= max(1, cfg.confirm_bars)) and (s <= thrS - cfg.min_edge) and (prev_s is not None and (prev_s - s) >= cfg.min_slope)
+    can_long = (below_run >= max(1, cfg.confirm_bars)) and (
+        s >= thrL + cfg.min_edge) and (prev_s is not None and (s - prev_s) >= cfg.min_slope)
+    can_short = (above_run >= max(1, cfg.confirm_bars)) and (
+        s <= thrS - cfg.min_edge) and (prev_s is not None and (prev_s - s) >= cfg.min_slope)
     print(
         f"[DBG {_fmt_jst(ts)}] S_ema={s:.3f} prev={prev_txt}  "
         f"below_run={below_run} above_run={above_run}  "
@@ -211,14 +262,19 @@ def _dbg_bar(ts, s, prev_s, thrL, thrS, below_run, above_run,
 # =============================================================================
 # Core trading
 # =============================================================================
-def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=False):
+
+
+def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool = False):
+    pnl_total = 0.0
     s_utc, e_utc = jst_window_utc(tgt, cfg.jst_start, cfg.jst_end)
-    print(f"[TRADER][{tgt} 09:00 JST] start window {cfg.jst_start}-{cfg.jst_end}, symbol={cfg.symbol}")
+    print(
+        f"[TRADER][{tgt} 09:00 JST] start window {cfg.jst_start}-{cfg.jst_end}, symbol={cfg.symbol}")
     print(f"[TRADER] thresholds(src=config): thr_long={cfg.thr_long}, thr_short={cfg.thr_short}, "
           f"exit_long={cfg.exit_long}, exit_short={cfg.exit_short}, ema_span={cfg.ema_span}")
     print(f"[TRADER] gates: confirm_bars={cfg.confirm_bars}, min_edge={cfg.min_edge}, min_slope={cfg.min_slope}, "
           f"vwap_gate={cfg.vwap_gate}, cooldown_bars={cfg.cooldown_bars}, side_filter={cfg.side_filter}")
-    print(f"[TRADER] subwindow: {cfg.sub_start or 'OFF'} ~ {cfg.sub_end or 'OFF'}")
+    print(
+        f"[TRADER] subwindow: {cfg.sub_start or 'OFF'} ~ {cfg.sub_end or 'OFF'}")
 
     ensure_tables(conn)
 
@@ -240,7 +296,7 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
     if use_sub:
         s2_utc, e2_utc = jst_window_utc(tgt, cfg.sub_start, cfg.sub_end)
         sig = sig[(sig.index >= s2_utc) & (sig.index < e2_utc)]
-        px  = px[(px.index  >= s2_utc) & (px.index  < e2_utc)]
+        px = px[(px.index >= s2_utc) & (px.index < e2_utc)]
 
     # 時間基準で inner join（安全のため）
     df = sig.join(px, how="inner")
@@ -251,7 +307,8 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
     # 参考：VWAP gate（signals_1m に 'vwap_ok' が入っている場合のみ使う）
     has_vwap_ok = ("vwap_ok" in df.columns)
     if cfg.vwap_gate and not has_vwap_ok:
-        print("[TRADER][INFO] vwap_gate requested but 'vwap_ok' column not found -> gate ignored")
+        print(
+            "[TRADER][INFO] vwap_gate requested but 'vwap_ok' column not found -> gate ignored")
     use_vwap = cfg.vwap_gate and has_vwap_ok
 
     # 状態
@@ -274,8 +331,8 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
 
         # サブ窓・クールダウン・VWAP
         in_subwin = True if not use_sub else (s2_utc <= ts < e2_utc)
-        on_cd     = cooldown > 0
-        vwap_ok   = bool(row["vwap_ok"]) if use_vwap else True
+        on_cd = cooldown > 0
+        vwap_ok = bool(row["vwap_ok"]) if use_vwap else True
 
         # --- 1) 前バーまでの連続をカウント更新 ---
         if prev_s is None:
@@ -311,6 +368,7 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
                 fee = price * cfg.lot_size * cfg.fee_rate
                 gross = (price - open_price) * cfg.lot_size
                 pnl = gross - fee
+                pnl_total += pnl   # ← 累計
                 emit(conn, cfg.symbol, ts, "SELL", "CLOSE", price, cfg.lot_size, pnl, 0,
                      f"S_ema={s:.3f}, ttl={int((_to_jst(ts)-_to_jst(open_ts)).total_seconds()/60)}m, gross={gross:.2f}, fee={fee:.2f}")
                 pos = 0
@@ -319,7 +377,8 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
                 cooldown = cfg.cooldown_bars
                 trades += 1
                 if verbose:
-                    print(f"[TRADER][{_fmt_jst(ts)} JST] CLOSE LONG  @ {price:.1f} | pos -> 0 | pnl={pnl:.2f}")
+                    print(
+                        f"[TRADER][{_fmt_jst(ts)} JST] CLOSE LONG  @ {price:.1f} | pos -> 0 | pnl={pnl:.2f}")
 
         elif pos < 0:
             exit_now = (s >= cfg.exit_short) or ttl_hit or eod
@@ -327,6 +386,7 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
                 fee = price * cfg.lot_size * cfg.fee_rate
                 gross = (open_price - price) * cfg.lot_size
                 pnl = gross - fee
+                pnl_total += pnl   # ← 累計
                 emit(conn, cfg.symbol, ts, "BUY", "CLOSE", price, cfg.lot_size, pnl, 0,
                      f"S_ema={s:.3f}, ttl={int((_to_jst(ts)-_to_jst(open_ts)).total_seconds()/60)}m, gross={gross:.2f}, fee={fee:.2f}")
                 pos = 0
@@ -335,7 +395,8 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
                 cooldown = cfg.cooldown_bars
                 trades += 1
                 if verbose:
-                    print(f"[TRADER][{_fmt_jst(ts)} JST] CLOSE SHORT @ {price:.1f} | pos -> 0 | pnl={pnl:.2f}")
+                    print(
+                        f"[TRADER][{_fmt_jst(ts)} JST] CLOSE SHORT @ {price:.1f} | pos -> 0 | pnl={pnl:.2f}")
 
         if eod:
             break  # ウィンドウ終端
@@ -346,31 +407,35 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
 
         # --- 3) エントリー判定（前バーまでの連続を使用） ---
         if pos == 0 and trades < cfg.max_trades_per_day and (not on_cd) and in_subwin and vwap_ok:
-            long_ok  = (cfg.side_filter in ("long", "both"))
+            long_ok = (cfg.side_filter in ("long", "both"))
             long_ok &= (below_run >= max(1, cfg.confirm_bars))
             long_ok &= (s >= cfg.thr_long + cfg.min_edge)
             long_ok &= (prev_s is not None and (s - prev_s) >= cfg.min_slope)
 
-            short_ok  = (cfg.side_filter in ("short", "both"))
+            short_ok = (cfg.side_filter in ("short", "both"))
             short_ok &= (above_run >= max(1, cfg.confirm_bars))
             short_ok &= (s <= cfg.thr_short - cfg.min_edge)
             short_ok &= (prev_s is not None and (prev_s - s) >= cfg.min_slope)
 
             if long_ok:
-                emit(conn, cfg.symbol, ts, "BUY", "OPEN", price, cfg.lot_size, 0.0, +100, f"S_ema={s:.3f}")
+                emit(conn, cfg.symbol, ts, "BUY", "OPEN", price,
+                     cfg.lot_size, 0.0, +100, f"S_ema={s:.3f}")
                 pos = +100
                 open_ts = ts
                 open_price = price
                 if verbose:
-                    print(f"[TRADER][{_fmt_jst(ts)} JST] OPEN LONG  @ {price:.1f} | pos 0 -> 100 | S_ema={s:.3f}")
+                    print(
+                        f"[TRADER][{_fmt_jst(ts)} JST] OPEN LONG  @ {price:.1f} | pos 0 -> 100 | S_ema={s:.3f}")
 
             elif short_ok:
-                emit(conn, cfg.symbol, ts, "SELL", "OPEN", price, cfg.lot_size, 0.0, -100, f"S_ema={s:.3f}")
+                emit(conn, cfg.symbol, ts, "SELL", "OPEN", price,
+                     cfg.lot_size, 0.0, -100, f"S_ema={s:.3f}")
                 pos = -100
                 open_ts = ts
                 open_price = price
                 if verbose:
-                    print(f"[TRADER][{_fmt_jst(ts)} JST] OPEN SHORT @ {price:.1f} | pos 0 -> -100 | S_ema={s:.3f}")
+                    print(
+                        f"[TRADER][{_fmt_jst(ts)} JST] OPEN SHORT @ {price:.1f} | pos 0 -> -100 | S_ema={s:.3f}")
 
         # 次バーへ
         prev_s = s
@@ -385,34 +450,43 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool=F
             emit(conn, cfg.symbol, last_ts, "SELL", "EOD", price, cfg.lot_size, gross - fee, 0,
                  f"EOD, gross={gross:.2f}, fee={fee:.2f}")
             if verbose:
-                print(f"[TRADER][{_fmt_jst(last_ts)} JST] EOD FLATTEN LONG  @ {price:.1f}")
+                print(
+                    f"[TRADER][{_fmt_jst(last_ts)} JST] EOD FLATTEN LONG  @ {price:.1f}")
         else:
             gross = (open_price - price) * cfg.lot_size
             emit(conn, cfg.symbol, last_ts, "BUY", "EOD", price, cfg.lot_size, gross - fee, 0,
                  f"EOD, gross={gross:.2f}, fee={fee:.2f}")
             if verbose:
-                print(f"[TRADER][{_fmt_jst(last_ts)} JST] EOD FLATTEN SHORT @ {price:.1f}")
+                print(
+                    f"[TRADER][{_fmt_jst(last_ts)} JST] EOD FLATTEN SHORT @ {price:.1f}")
 
+    case_name = getattr(cfg, "_case_name", "default")
+    # 状態保存（★ここで呼ぶ）
+    record_state(conn, cfg.symbol, ts, s, long_ok, short_ok,
+                 below_run, above_run, pos, case_name)
     conn.commit()
     print(f"[TRADER] done for {tgt} ({cfg.symbol})")
+    return pnl_total  # ✅ 追加
+
 
 # 先頭付近
-from tq.features import PACK3  # すでにALL_SPECSに含めるならこのimportは不要
 
 # ...systems_10 内 or 直後
+
 def systems_10(bars: pd.DataFrame, feat: pd.DataFrame, use_pack3_in_systems: bool = False, pack3_weight: float = 0.2):
     # 既存の buy/sell 計算 ...
     # buy_sum, sell_sum を既に作っている前提
 
     if use_pack3_in_systems:
         pack3_buy = feat[[
-            "or_pos","or_break_up","dir_streak_up","rsi_slope3","macd_hist_slope3","price_to_prev_close"
+            "or_pos", "or_break_up", "dir_streak_up", "rsi_slope3", "macd_hist_slope3", "price_to_prev_close"
         ]].mean(axis=1)
         pack3_sell = feat[[
-            "or_break_dn","dir_streak_dn","entropy10","ret_skew20"
+            "or_break_dn", "dir_streak_dn", "entropy10", "ret_skew20"
         ]].mean(axis=1)
         buy_sum = (buy_sum + pack3_weight * pack3_buy) / (1.0 + pack3_weight)
-        sell_sum = (sell_sum + pack3_weight * pack3_sell) / (1.0 + pack3_weight)
+        sell_sum = (sell_sum + pack3_weight * pack3_sell) / \
+            (1.0 + pack3_weight)
 
     S = (buy_sum - sell_sum).clip(-1, 1)
     # 戻り値は既存の形式に合わせて
@@ -422,24 +496,44 @@ def systems_10(bars: pd.DataFrame, feat: pd.DataFrame, use_pack3_in_systems: boo
     return out
 
 
+def record_state(conn, symbol, ts, S_ema, can_long, can_short,
+                 below_run, above_run, pos, case_name):
+    conn.execute("""
+        INSERT OR REPLACE INTO trader_state_1m
+        (symbol, ts, S_ema, can_long, can_short,
+         below_run, above_run, pos, case_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (symbol, ts.isoformat(), float(S_ema), int(can_long), int(can_short),
+          below_run, above_run, pos, case_name))
+    conn.commit()
+
 # =============================================================================
 # CLI
 # =============================================================================
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--use-last-session", action="store_true")
     ap.add_argument("--target-date", help="YYYY-MM-DD（JST）")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--case", type=str,
+                    help="Name of test case in YAML config")
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
+    # cfg = load_config(args.config)
+    cfg = load_config(args.config, args.case)
+    # cfg["_case_name"] = args.case
+
     conn = sqlite3.connect(cfg.db_path, timeout=5_000)
     try:
-        tgt = decide_target_date(conn, cfg.symbol, args.use_last_session, args.target_date)
+        tgt = decide_target_date(
+            conn, cfg.symbol, args.use_last_session, args.target_date)
         run_trader(conn, cfg, tgt, verbose=args.verbose)
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     main()
