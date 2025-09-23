@@ -437,6 +437,11 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool =
                     print(
                         f"[TRADER][{_fmt_jst(ts)} JST] OPEN SHORT @ {price:.1f} | pos 0 -> -100 | S_ema={s:.3f}")
 
+                case_name = getattr(cfg, "_case_name", "default")
+                # 状態保存（★ここで呼ぶ）
+                record_state(conn, cfg.symbol, ts, s, long_ok, short_ok,
+                             below_run, above_run, pos, case_name)
+
         # 次バーへ
         prev_s = s
 
@@ -460,10 +465,6 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool =
                 print(
                     f"[TRADER][{_fmt_jst(last_ts)} JST] EOD FLATTEN SHORT @ {price:.1f}")
 
-    case_name = getattr(cfg, "_case_name", "default")
-    # 状態保存（★ここで呼ぶ）
-    record_state(conn, cfg.symbol, ts, s, long_ok, short_ok,
-                 below_run, above_run, pos, case_name)
     conn.commit()
     print(f"[TRADER] done for {tgt} ({cfg.symbol})")
     return pnl_total  # ✅ 追加
