@@ -45,10 +45,16 @@ def load_config(path: str) -> Config:
     c.db_path = raw.get("db_path", c.db_path)
     c.symbol = raw.get("symbol", c.symbol)
     c.jst_start = raw.get("jst_start", c.jst_start)
-    c.jst_end   = raw.get("jst_end", c.jst_end)
-    c.weights   = raw.get("weights", {"pack1":1.0,"pack2":1.0,"pack3":1.0,"pack4":1.0})
+    c.jst_end = raw.get("jst_end", c.jst_end)
+    raw_weights = raw.get("weights", None)
+    if raw_weights:
+        # pack1, pack2 ... の順で20個に変換
+        weights = []
+        for i in range(1, 21):
+            key = f"pack{i}"
+            weights.append(float(raw_weights.get(key, 1.0)))
+        c.weights = weights
     return c
-
 
 
 # =========================
@@ -67,10 +73,14 @@ def jst_day_from_arg(target_date: Optional[str], use_last_session: bool,
             return pd.to_datetime(row[0], utc=True).tz_convert(JST).date()
     return datetime.now(JST).date()
 
+
 def jst_window_utc(d: date, start_hm: Tuple[int, int], end_hm: Tuple[int, int]) -> Tuple[datetime, datetime]:
-    s = datetime.combine(d, time(start_hm[0], start_hm[1]), JST).astimezone(timezone.utc)
-    e = datetime.combine(d, time(end_hm[0], end_hm[1]), JST).astimezone(timezone.utc)
+    s = datetime.combine(
+        d, time(start_hm[0], start_hm[1]), JST).astimezone(timezone.utc)
+    e = datetime.combine(
+        d, time(end_hm[0], end_hm[1]), JST).astimezone(timezone.utc)
     return s, e
+
 
 def ensure_utc_index(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -210,6 +220,7 @@ CREATE_FEATURES_SQL_SUFFIX = """,
 #     conn.commit()
 #     return len(rows)
 
+
 def upsert_signals(conn: sqlite3.Connection, symbol: str, sig_out: pd.DataFrame):
     """
     signals_1m にシグナルを upsert する
@@ -253,7 +264,8 @@ def upsert_signals(conn: sqlite3.Connection, symbol: str, sig_out: pd.DataFrame)
 
     placeholders = ",".join(["?"] * len(insert_cols))
 
-    update_cols = [f"{c}=excluded.{c}" for c in insert_cols if c not in ("symbol", "ts")]
+    update_cols = [
+        f"{c}=excluded.{c}" for c in insert_cols if c not in ("symbol", "ts")]
 
     sql = f"""
     INSERT INTO signals_1m ({",".join(insert_cols)})
@@ -289,7 +301,6 @@ def upsert_signals(conn: sqlite3.Connection, symbol: str, sig_out: pd.DataFrame)
     return len(rows)
 
 
-
 def upsert_features(conn: sqlite3.Connection, symbol: str, feat: pd.DataFrame) -> int:
     if feat.empty:
         return 0
@@ -315,7 +326,7 @@ def upsert_features(conn: sqlite3.Connection, symbol: str, feat: pd.DataFrame) -
     rows = []
     for ts, r in feat.iterrows():
         base = [symbol, pd.Timestamp(ts).tz_convert(timezone.utc).isoformat()]
-        vals = [ (float(r[c]) if pd.notna(r[c]) else None) for c in cols ]
+        vals = [(float(r[c]) if pd.notna(r[c]) else None) for c in cols]
         rows.append(base + vals)
     conn.executemany(sql, rows)
     conn.commit()
@@ -339,13 +350,15 @@ def load_bars(conn: sqlite3.Connection, symbol: str, start_utc: datetime, end_ut
     ).set_index("ts")
     return ensure_utc_index(df)
 
+
 def load_ext(conn: sqlite3.Connection, start_utc: datetime, end_utc: datetime) -> pd.DataFrame:
     q = """
     SELECT ts, symbol, close
     FROM ext_1m
     WHERE ts>=? AND ts<?
     """
-    df = pd.read_sql_query(q, conn, params=(start_utc.isoformat(), end_utc.isoformat()), parse_dates=["ts"])
+    df = pd.read_sql_query(q, conn, params=(
+        start_utc.isoformat(), end_utc.isoformat()), parse_dates=["ts"])
     if df.empty:
         return pd.DataFrame()
     df = df.pivot(index="ts", columns="symbol", values="close")
@@ -354,26 +367,33 @@ def load_ext(conn: sqlite3.Connection, start_utc: datetime, end_utc: datetime) -
 
 def build_signals_from_pack2(feat_all: pd.DataFrame) -> pd.DataFrame:
     """Pack2の *_base から 5買い/5売りの平均差で S を作る"""
-    need = ["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base",
-            "sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]
+    need = ["buy1_base", "buy2_base", "buy3_base", "buy4_base", "buy5_base",
+            "sell1_base", "sell2_base", "sell3_base", "sell4_base", "sell5_base"]
     missing = [c for c in need if c not in feat_all.columns]
     if missing:
         raise KeyError(f"Pack2 base columns missing: {missing}")
     sig = pd.DataFrame(index=feat_all.index)
     # 0〜1 の想定（features側で01化済）
-    buys  = feat_all[["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]].clip(0,1)
-    sells = feat_all[["sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]].clip(0,1)
-    sig["b1"],sig["b2"],sig["b3"],sig["b4"],sig["b5"] = [buys.iloc[:,i] for i in range(5)]
-    sig["s1"],sig["s2"],sig["s3"],sig["s4"],sig["s5"] = [sells.iloc[:,i] for i in range(5)]
+    buys = feat_all[["buy1_base", "buy2_base",
+                     "buy3_base", "buy4_base", "buy5_base"]].clip(0, 1)
+    sells = feat_all[["sell1_base", "sell2_base",
+                      "sell3_base", "sell4_base", "sell5_base"]].clip(0, 1)
+    sig["b1"], sig["b2"], sig["b3"], sig["b4"], sig["b5"] = [
+        buys.iloc[:, i] for i in range(5)]
+    sig["s1"], sig["s2"], sig["s3"], sig["s4"], sig["s5"] = [
+        sells.iloc[:, i] for i in range(5)]
     sig["S"] = buys.mean(axis=1) - sells.mean(axis=1)  # [-1,1]想定
     return sig
+
 
 def build_signals_from_all(feat_all: pd.DataFrame, weights: dict) -> pd.DataFrame:
     sig = pd.DataFrame(index=feat_all.index)
 
     # Pack2
-    buys = feat_all[["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]].clip(0,1)
-    sells = feat_all[["sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]].clip(0,1)
+    buys = feat_all[["buy1_base", "buy2_base",
+                     "buy3_base", "buy4_base", "buy5_base"]].clip(0, 1)
+    sells = feat_all[["sell1_base", "sell2_base",
+                      "sell3_base", "sell4_base", "sell5_base"]].clip(0, 1)
     sig["b_pack2"] = buys.mean(axis=1)
     sig["s_pack2"] = sells.mean(axis=1)
 
@@ -386,17 +406,18 @@ def build_signals_from_all(feat_all: pd.DataFrame, weights: dict) -> pd.DataFram
     sig["s_pack3"] = 1 - feat_all["p3_macd_hist01"]
 
     # Pack4
-    sig["b_pack4"] = (feat_all["p4_ret5m"].clip(lower=-0.01, upper=0.01) + 0.01) / 0.02
+    sig["b_pack4"] = (feat_all["p4_ret5m"].clip(
+        lower=-0.01, upper=0.01) + 0.01) / 0.02
     sig["s_pack4"] = 1 - sig["b_pack4"]
 
     # 重み付き合成
-    w1,w2,w3,w4 = weights["pack1"],weights["pack2"],weights["pack3"],weights["pack4"]
+    w1, w2, w3, w4 = weights["pack1"], weights["pack2"], weights["pack3"], weights["pack4"]
     num = (w1*(sig["b_pack1"]-sig["s_pack1"])
-         + w2*(sig["b_pack2"]-sig["s_pack2"])
-         + w3*(sig["b_pack3"]-sig["s_pack3"])
-         + w4*(sig["b_pack4"]-sig["s_pack4"]))
+           + w2*(sig["b_pack2"]-sig["s_pack2"])
+           + w3*(sig["b_pack3"]-sig["s_pack3"])
+           + w4*(sig["b_pack4"]-sig["s_pack4"]))
     den = (w1+w2+w3+w4)
-    sig["S"] = (num/den).clip(-1,1)
+    sig["S"] = (num/den).clip(-1, 1)
 
     return sig
 
@@ -459,6 +480,7 @@ def build_signals_from_all(feat_all: pd.DataFrame, weights: dict) -> pd.DataFram
 
 #     return out
 
+
 def build_signals_from_all20(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
 
@@ -470,8 +492,10 @@ def build_signals_from_all20(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
     df[s_cols] = df[s_cols].fillna(0.5)
 
     # 加重平均
-    b_score = sum(weights.get(f"pack{i}", 1.0) * df[f"b_pack{i}"] for i in range(1, 21))
-    s_score = sum(weights.get(f"pack{i}", 1.0) * df[f"s_pack{i}"] for i in range(1, 21))
+    b_score = sum(weights.get(f"pack{i}", 1.0)
+                  * df[f"b_pack{i}"] for i in range(1, 21))
+    s_score = sum(weights.get(f"pack{i}", 1.0)
+                  * df[f"s_pack{i}"] for i in range(1, 21))
     w_total = sum(weights.get(f"pack{i}", 1.0) for i in range(1, 21))
 
     out["S_buy"] = (b_score / w_total).fillna(0.5)
@@ -484,6 +508,7 @@ def build_signals_from_all20(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
         out[f"s_pack{i}"] = df[f"s_pack{i}"].fillna(0.5).clip(0, 1)
 
     return out
+
 
 def build_signals_from_all10(feat_all: pd.DataFrame, weights: dict) -> pd.DataFrame:
     """
@@ -500,9 +525,11 @@ def build_signals_from_all10(feat_all: pd.DataFrame, weights: dict) -> pd.DataFr
         sig["b_pack1"] = sig["s_pack1"] = 0.5
 
     # Pack2
-    if all(c in feat_all.columns for c in ["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]):
-        buys  = feat_all[["buy1_base","buy2_base","buy3_base","buy4_base","buy5_base"]].clip(0,1)
-        sells = feat_all[["sell1_base","sell2_base","sell3_base","sell4_base","sell5_base"]].clip(0,1)
+    if all(c in feat_all.columns for c in ["buy1_base", "buy2_base", "buy3_base", "buy4_base", "buy5_base"]):
+        buys = feat_all[["buy1_base", "buy2_base",
+                         "buy3_base", "buy4_base", "buy5_base"]].clip(0, 1)
+        sells = feat_all[["sell1_base", "sell2_base",
+                          "sell3_base", "sell4_base", "sell5_base"]].clip(0, 1)
         sig["b_pack2"] = buys.mean(axis=1)
         sig["s_pack2"] = sells.mean(axis=1)
     else:
@@ -517,7 +544,7 @@ def build_signals_from_all10(feat_all: pd.DataFrame, weights: dict) -> pd.DataFr
 
     # Pack4
     if "p4_ret5m" in feat_all:
-        sig["b_pack4"] = (feat_all["p4_ret5m"].clip(-0.01,0.01) + 0.01) / 0.02
+        sig["b_pack4"] = (feat_all["p4_ret5m"].clip(-0.01, 0.01) + 0.01) / 0.02
         sig["s_pack4"] = 1 - sig["b_pack4"]
     else:
         sig["b_pack4"] = sig["s_pack4"] = 0.5
@@ -536,9 +563,24 @@ def build_signals_from_all10(feat_all: pd.DataFrame, weights: dict) -> pd.DataFr
         if b_col in sig.columns and s_col in sig.columns:
             num += w * (sig[b_col] - sig[s_col])
             den += w
-    sig["S"] = (num/den).clip(-1,1) if den > 0 else 0.0
+    sig["S"] = (num/den).clip(-1, 1) if den > 0 else 0.0
 
     return sig
+
+
+def generate_signals(conn, cfg, target_date):
+    s_h, s_m = map(int, cfg.jst_start.split(":"))
+    e_h, e_m = map(int, cfg.jst_end.split(":"))
+    out_s_utc, out_e_utc = jst_window_utc(target_date, (s_h, s_m), (e_h, e_m))
+    warm_s_utc, warm_e_utc = jst_window_utc(target_date, (8, 55), (10, 5))
+
+    bars = load_bars(conn, cfg.symbol, warm_s_utc, warm_e_utc)
+    df_ext = load_ext(conn, warm_s_utc, warm_e_utc)
+    feat_all = compute_packs(bars, df_mkt=df_ext)
+    pack_scores = compute_pack_scores_from_all_features(feat_all)
+    sig_out = build_signals_from_all20(pack_scores, cfg.weights)
+
+    return sig_out.loc[out_s_utc:out_e_utc]
 
 
 def main():
@@ -553,7 +595,8 @@ def main():
     conn = sqlite3.connect(cfg.db_path, timeout=10_000)
 
     try:
-        tgt = jst_day_from_arg(args.target_date, args.use_last_session, conn, cfg.symbol)
+        tgt = jst_day_from_arg(
+            args.target_date, args.use_last_session, conn, cfg.symbol)
 
         # 出力窓（JST 09:00–10:00）
         s_h, s_m = map(int, cfg.jst_start.split(":"))
@@ -563,7 +606,8 @@ def main():
         # 計算窓（JST 08:55–10:05）: ウォームアップ込み
         warm_s_utc, warm_e_utc = jst_window_utc(tgt, (8, 55), (10, 5))
 
-        print(f"[STRATEGY] window JST {cfg.jst_start}-{cfg.jst_end} -> UTC {out_s_utc.isoformat()} ~ {out_e_utc.isoformat()} | symbol={cfg.symbol}")
+        print(
+            f"[STRATEGY] window JST {cfg.jst_start}-{cfg.jst_end} -> UTC {out_s_utc.isoformat()} ~ {out_e_utc.isoformat()} | symbol={cfg.symbol}")
 
         # 1) バー読み込み（ウォームアップ窓）
         bars = load_bars(conn, cfg.symbol, warm_s_utc, warm_e_utc)
@@ -581,8 +625,13 @@ def main():
 
         feat_all = compute_packs(bars, df_mkt=df_ext)
         pack_scores = compute_pack_scores_from_all_features(feat_all)
-        sig_out = build_signals_from_all20(pack_scores, cfg.weights)
 
+        # from strategy_utils import generate_signals
+
+        # sig_out = generate_signals(conn, cfg, target_date)
+        # signals_1m に書き込み
+
+        sig_out = build_signals_from_all20(pack_scores, cfg.weights)
 
         # 4) 出力窓にスライス（UTC）
         # sig_out = sig_all[(sig_all.index >= out_s_utc) & (sig_all.index < out_e_utc)]
@@ -591,7 +640,6 @@ def main():
             print("[STRATEGY][WARN] no rows in output window")
             return
 
-
         print("[DEBUG] sig_out sample:")
         print(sig_out.head().to_string())
 
@@ -599,7 +647,8 @@ def main():
         n_sig = upsert_signals(conn, cfg.symbol, sig_out)
         n_feat = upsert_features(conn, cfg.symbol, feat_out)
 
-        print(f"[STRATEGY] done -> {n_sig} rows to signals_1m, {n_feat} rows to features_1m")
+        print(
+            f"[STRATEGY] done -> {n_sig} rows to signals_1m, {n_feat} rows to features_1m")
 
     finally:
         conn.close()

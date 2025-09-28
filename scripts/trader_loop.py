@@ -11,6 +11,8 @@ from typing import Optional, Tuple
 import pandas as pd
 import yaml
 from zoneinfo import ZoneInfo
+from scripts.strategy_loop import generate_signals
+
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -50,6 +52,7 @@ class Config:
     lot_size: int = 100
     ttl_min: int = 8
     fee_rate: float = 0.0002  # 約定ごとに price*qty*fee_rate
+    weights: dict = None
 
 
 def _maybe_float(x, default):
@@ -99,6 +102,19 @@ def load_config(path: str, case: Optional[str] = None) -> Config:
     c.lot_size = int(raw.get("lot_size", c.lot_size))
     c.ttl_min = int(raw.get("ttl_min", c.ttl_min))
     c.fee_rate = _maybe_float(raw.get("fee_rate", c.fee_rate), c.fee_rate)
+
+    raw_weights = raw.get("weights", None)
+    if raw_weights:
+        if isinstance(raw_weights, dict):
+            # dict の場合は list に変換
+            c.weights = [raw_weights.get(f"pack{i}", 1.0)
+                         for i in range(1, 21)]
+        elif isinstance(raw_weights, list):
+            c.weights = raw_weights
+        else:
+            raise ValueError("weights must be list or dict")
+    else:
+        c.weights = [1.0] * 20
 
     # case名を記録（後で DB に保存したりログに残せるように）
     setattr(c, "_case_name", case or "default")
@@ -277,6 +293,10 @@ def run_trader(conn: sqlite3.Connection, cfg: Config, tgt: date, verbose: bool =
         f"[TRADER] subwindow: {cfg.sub_start or 'OFF'} ~ {cfg.sub_end or 'OFF'}")
 
     ensure_tables(conn)
+    sig_out = generate_signals(conn, cfg, tgt)
+
+   # trader が期待しているのは "sig"
+    sig = sig_out
 
     sig = read_signals(conn, cfg.symbol, s_utc, e_utc)
     if sig.empty:
