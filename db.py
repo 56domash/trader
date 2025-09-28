@@ -1,39 +1,65 @@
 import sqlite3
 
-conn = sqlite3.connect("runtime.db")
-cur = conn.cursor()
+DB_PATH = "runtime.db"
 
-# テーブル一覧
-print(cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall())
 
-# 件数確認
-print("bars_1m rows:", cur.execute("SELECT COUNT(*) FROM bars_1m;").fetchone()[0])
-print("signals_1m rows:", cur.execute("SELECT COUNT(*) FROM signals_1m;").fetchone()[0])
-print("features_1m rows:", cur.execute("SELECT COUNT(*) FROM features_1m;").fetchone()[0])
+def check_recent_signals(limit=20):
+    conn = sqlite3.connect("runtime.db")
+    cur = conn.cursor()
+    query = f"""
+    SELECT ts, S, S_buy, S_sell
+    FROM signals_1m
+    ORDER BY ts DESC
+    LIMIT {limit}
+    """
+    rows = cur.execute(query).fetchall()
+    conn.close()
 
-#print("features_1m rows:", cur.execute("DROP TABLE IF EXISTS features_1m;"))
+    print("\n[signals_1m] recent signals:")
+    for r in rows:
+        print(r)
 
-import sqlite3, pandas as pd
-conn = sqlite3.connect("runtime.db")
-df = pd.read_sql("SELECT * FROM features_1m LIMIT 5", conn)
-print(df.head())
 
-df = pd.read_sql("SELECT * FROM fills_1m LIMIT 10;", conn)
-print(df.head())
+# def check_recent_signals(limit=20):
+#     conn = sqlite3.connect("runtime.db")
+#     query = f"""
+#     SELECT ts, S, S_buy, S_sell
+#     FROM signals_1m
+#     ORDER BY ts DESC
+#     LIMIT {limit}
+#     """
+#     df = pd.read_sql(query, conn)
+#     conn.close()
+#     print("\n[signals_1m] recent signals:")
+#     print(df)
 
-import sqlite3, pandas as pd
 
-conn = sqlite3.connect("runtime.db")
-df = pd.read_sql("SELECT * FROM fills_1m", conn, parse_dates=["ts"])
+check_recent_signals()
 
-# 日別に集計
-df["date"] = df["ts"].dt.date
-daily = df.groupby("date").agg(
-    trades=("pnl", "count"),
-    pnl_total=("pnl", "sum"),
-    pnl_avg=("pnl", "mean"),
-    wins=("pnl", lambda x: (x > 0).sum()),
-    losses=("pnl", lambda x: (x <= 0).sum())
-).reset_index()
 
-print(daily)
+def check_trades(limit: int = 20):
+    print("\n[trades_1m] Recent trades:")
+    query = f"""
+        SELECT *
+        FROM trades_1m
+        ORDER BY ts DESC
+        LIMIT {limit}
+    """
+    df = pd.read_sql(query, conn)
+    print(df)
+
+
+def check_trades_by_date(target_date: str):
+    print(f"\n[trades_1m] Trades on {target_date}:")
+    query = f"""
+        SELECT *
+        FROM trades_1m
+        WHERE date(ts) = '{target_date}'
+        ORDER BY ts
+    """
+    df = pd.read_sql(query, conn)
+    print(df)
+
+
+check_trades(20)                     # 直近20件
+check_trades_by_date("2025-09-12")   # 特定日分

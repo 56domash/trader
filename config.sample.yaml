@@ -19,9 +19,15 @@ symbol: "7203.T"          # ←ここだけ 7203.T に戻す
 jst_start: "09:00"
 jst_end: "10:00"
 
+thresholds:
+  thr_long: 0.1      # ロングは今のまま
+  thr_short: -0.05   # ショートを緩める
+  exit_long: 0.0     # 0 を割ったら利確/損切り
+  exit_short: 0.0
+
 
 # しきい値（まずはロングだけ刺さるように）
-thr_long: 0.01        # ← sampleが出した p70≈0.249 を少し下回らせる
+thr_long: 0.1        # ← sampleが出した p70≈0.249 を少し下回らせる
 thr_short: -0.50      # ← ショートは当面オフに近い値に
 ema_span: 3
 confirm_bars: 1
@@ -41,3 +47,41 @@ max_trades_per_day: 10
 # side_filter: "long"
 auto_thresholds: false     # or
 thr_mode: "fixed"
+
+# config.toyota.yaml
+db_path: ./runtime.db
+symbol: 7203.T
+jst_start: "09:00"
+jst_end: "10:00"
+
+weights:
+  pack1: 1.0
+  pack2: 1.0
+  pack3: 1.0
+  pack4: 1.0
+  pack5: 1.0
+  pack6: 1.0
+  pack7: 1.0
+  pack8: 1.0
+  pack9: 1.0
+  pack10: 1.0
+  pack11: 1.0
+  pack12: 1.0
+  pack8: 1.0
+  pack9: 1.0
+  pack10: 1.0
+  pack11: 1.0
+  pack12: 1.0
+  pack13: 1.0
+  pack14: 1.0
+  pack15: 1.0
+  pack16: 1.0
+  pack17: 1.0
+  pack18: 1.0
+  pack19: 1.0
+  pack20: 1.0
+
+thr_long: 0.1      # ロングは今のまま
+thr_short: -0.05   # ショートを緩める
+exit_long: 0.0     # 0 を割ったら利確/損切り
+exit_short: 0.0

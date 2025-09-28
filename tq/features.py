@@ -700,11 +700,31 @@ def compute_pack4(df: pd.DataFrame,
             out["p4_corr_auto"] = close.pct_change().rolling(30).corr(mkt["SECTOR_AUTO"].pct_change())
 
     # --- ダミーで他市場（例: SP500, GOLD, OIL）は0.5埋め（拡張可能）
-    out["p4_corr_sp500"] = 0.5
-    out["p4_corr_gold"] = 0.5
-    out["p4_corr_oil"] = 0.5
-    out["p4_corr_vix"] = 0.5
-    out["p4_corr_bond"] = 0.5
+    # out["p4_corr_sp500"] = 0.5
+    # out["p4_corr_gold"] = 0.5
+    # out["p4_corr_oil"] = 0.5
+    # out["p4_corr_vix"] = 0.5
+    # out["p4_corr_bond"] = 0.5
+
+        # --- 外部市場（df_mkt: SP500, GOLD, OIL, VIX, BOND10Y）
+    if df_mkt is not None and not df_mkt.empty:
+        if "SP500" in df_mkt:
+            out["p4_corr_sp500"] = close.pct_change().rolling(30).corr(df_mkt["SP500"].pct_change())
+        if "GOLD" in df_mkt:
+            out["p4_corr_gold"] = close.pct_change().rolling(30).corr(df_mkt["GOLD"].pct_change())
+        if "OIL" in df_mkt:
+            out["p4_corr_oil"] = close.pct_change().rolling(30).corr(df_mkt["OIL"].pct_change())
+        if "VIX" in df_mkt:
+            out["p4_corr_vix"] = close.pct_change().rolling(30).corr(df_mkt["VIX"].pct_change())
+        if "BOND10Y" in df_mkt:
+            out["p4_corr_bond"] = close.pct_change().rolling(30).corr(df_mkt["BOND10Y"].pct_change())
+    else:
+        out["p4_corr_sp500"] = 0.5
+        out["p4_corr_gold"]  = 0.5
+        out["p4_corr_oil"]   = 0.5
+        out["p4_corr_vix"]   = 0.5
+        out["p4_corr_bond"]  = 0.5
+
 
     # --- リスク指標
     out["p4_beta_mkt30"] = close.pct_change().rolling(30).cov(day_close.pct_change()) / (

@@ -44,10 +44,22 @@ def load_config(path: str) -> Config:
 # =========================
 # Time Window
 # =========================
+# def compute_window_for_date(date_jst) -> Tuple[datetime, datetime]:
+#     start_jst = datetime.combine(date_jst, time(8, 55), JST)
+#     end_jst   = datetime.combine(date_jst, time(10, 5), JST)
+#     return (start_jst, end_jst)  # JSTのまま返す（後でUTCに変換）
 def compute_window_for_date(date_jst) -> Tuple[datetime, datetime]:
-    start_jst = datetime.combine(date_jst, time(8, 55), JST)
-    end_jst   = datetime.combine(date_jst, time(10, 5), JST)
-    return (start_jst, end_jst)  # JSTのまま返す（後でUTCに変換）
+    # JST 08:55–10:05 を UTC に変換して返す
+    start_utc = datetime.combine(date_jst, time(8, 55), JST).astimezone(timezone.utc)
+    end_utc   = datetime.combine(date_jst, time(10, 5), JST).astimezone(timezone.utc)
+    return (start_utc, end_utc)
+
+def slice_window_utc(df_utc: pd.DataFrame, start_utc: datetime, end_utc: datetime) -> pd.DataFrame:
+    if df_utc.empty:
+        return df_utc
+    return df_utc[(df_utc.index >= start_utc) & (df_utc.index < end_utc)]
+
+
 
 def decide_target_date(conn: sqlite3.Connection, symbol: str,
                        use_last_session: bool,
@@ -151,18 +163,36 @@ def yf_download_7d_1m(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
     return _normalize_ohlcv(raw, symbol)
 
-def slice_window_jst(df_utc: pd.DataFrame, start_jst: datetime, end_jst: datetime) -> pd.DataFrame:
+# def slice_window_ust(df_utc: pd.DataFrame, start_jst: datetime, end_jst: datetime) -> pd.DataFrame:
+#     """UTC indexのDFをJSTに変換してから窓切り→UTCへ戻す"""
+#     if df_utc.empty:
+#         return df_utc
+#     jst = df_utc.copy()
+#     jst.index = jst.index.tz_convert(JST)
+#     jwin = jst[(jst.index >= start_jst) & (jst.index < end_jst)]
+#     if jwin.empty:
+#         return jwin
+#     out = jwin.copy()
+#     out.index = out.index.tz_convert(timezone.utc)
+#     return out
+
+def slice_window_ust(df_utc: pd.DataFrame, start_jst: datetime, end_jst: datetime) -> pd.DataFrame:
     """UTC indexのDFをJSTに変換してから窓切り→UTCへ戻す"""
     if df_utc.empty:
         return df_utc
     jst = df_utc.copy()
     jst.index = jst.index.tz_convert(JST)
-    jwin = jst[(jst.index >= start_jst) & (jst.index < end_jst)]
+
+    # ±1分の余裕を持たせる
+    jwin = jst[(jst.index >= (start_jst - pd.Timedelta(minutes=1))) &
+               (jst.index < (end_jst + pd.Timedelta(minutes=1)))]
+
     if jwin.empty:
         return jwin
     out = jwin.copy()
     out.index = out.index.tz_convert(timezone.utc)
     return out
+
 
 # =========================
 # DB helpers
@@ -184,6 +214,8 @@ CREATE TABLE IF NOT EXISTS fx_1m (
 );
 """
 
+
+
 def upsert_bars(conn: sqlite3.Connection, table: str, keyname: str, df: pd.DataFrame):
     if df.empty:
         print(f"[INGEST][INFO] skip empty df for {table}")
@@ -195,8 +227,17 @@ def upsert_bars(conn: sqlite3.Connection, table: str, keyname: str, df: pd.DataF
 
     rows = []
     for ts, r in df.iterrows():
+        # rows.append((
+        #     str(df.iloc[0].get(keyname, r.get(keyname, ""))) if keyname in df.columns else r.get(keyname, ""),
+        #     pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(),
+        #     float(r["open"]) if pd.notna(r["open"]) else None,
+        #     float(r["high"]) if pd.notna(r["high"]) else None,
+        #     float(r["low"])  if pd.notna(r["low"])  else None,
+        #     float(r["close"])if pd.notna(r["close"])else None,
+        #     float(r["volume"]) if pd.notna(r["volume"]) else None,
+        # ))
         rows.append((
-            str(df.iloc[0].get(keyname, r.get(keyname, ""))) if keyname in df.columns else r.get(keyname, ""),
+            str(r.get(keyname, "")),  # ← 各行ごとに symbol を取る
             pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(),
             float(r["open"]) if pd.notna(r["open"]) else None,
             float(r["high"]) if pd.notna(r["high"]) else None,
@@ -204,6 +245,7 @@ def upsert_bars(conn: sqlite3.Connection, table: str, keyname: str, df: pd.DataF
             float(r["close"])if pd.notna(r["close"])else None,
             float(r["volume"]) if pd.notna(r["volume"]) else None,
         ))
+
     if table == "bars_1m":
         sql = """
         INSERT INTO bars_1m (symbol, ts, open, high, low, close, volume)
@@ -240,16 +282,10 @@ def main():
 
     try:
         target_date = decide_target_date(conn, cfg.symbol, args.use_last_session, args.target_date)
-        start_jst, end_jst = compute_window_for_date(target_date)
-        start_utc = start_jst.astimezone(timezone.utc)
-        end_utc   = end_jst.astimezone(timezone.utc)
-        print(f"[INGEST] window JST {target_date} 08:55–10:05 -> UTC {start_utc.isoformat()} ~ {end_utc.isoformat()} | db={cfg.db_path}")
-
-        # ---- メイン銘柄（1m/7d → JST窓切り）----
+        start_utc, end_utc = compute_window_for_date(target_date)
         base = yf_download_7d_1m(cfg.symbol)
-        print(base)
         if not base.empty:
-            win = slice_window_jst(base, start_jst, end_jst)
+            win = slice_window_utc(base, start_utc, end_utc)
             if not win.empty:
                 win = win.copy(); win["symbol"] = cfg.symbol
         else:
@@ -257,12 +293,63 @@ def main():
         n1 = upsert_bars(conn, "bars_1m", "symbol", win)
         print(f"[INGEST][bars_1m] {cfg.symbol}: +{n1} rows")
 
+
+        
+
+        # start_jst, end_jst = compute_window_for_date(target_date)
+        # start_utc = start_jst.astimezone(timezone.utc)
+        # end_utc   = end_jst.astimezone(timezone.utc)
+        # start_utc, end_utc = compute_window_for_date(target_date)
+        # # base = yf_download_7d_1m(cfg.symbol)
+        # print(f"[INGEST] window JST {target_date} 08:55–10:05 -> UTC {start_utc.isoformat()} ~ {end_utc.isoformat()} | db={cfg.db_path}")
+
+        # # ---- メイン銘柄（1m/7d → JST窓切り）----
+        # base = yf_download_7d_1m(cfg.symbol)
+        # print(base)
+        # if not base.empty:
+        #     win = slice_window_ust(base, start_utc, end_utc)
+        #     if not win.empty:
+        #         win = win.copy(); win["symbol"] = cfg.symbol
+        # else:
+        #     win = pd.DataFrame()
+        # n1 = upsert_bars(conn, "bars_1m", "symbol", win)
+        # print(f"[INGEST][bars_1m] {cfg.symbol}: +{n1} rows")
+
+        # ---- 外部市場（SP500, GOLD, OIL, VIX, BOND10Y）----
+        from tq.ingest import fetch_external_1m
+        ext = fetch_external_1m(period="7d")
+        if not ext.empty:
+            win_ext = slice_window_ust(ext, start_utc, end_utc)
+            if not win_ext.empty:
+                rows = []
+                for ts, r in win_ext.iterrows():
+                    for col in ["SP500","GOLD","OIL","VIX","BOND10Y"]:
+                        if col in r and pd.notna(r[col]):
+                            rows.append((col, pd.Timestamp(ts).tz_convert(timezone.utc).isoformat(), float(r[col])))
+                if rows:
+                    conn.execute("""
+                    CREATE TABLE IF NOT EXISTS ext_1m (
+                      symbol TEXT NOT NULL,
+                      ts     TEXT NOT NULL,
+                      close  REAL,
+                      PRIMARY KEY(symbol, ts)
+                    )
+                    """)
+                    conn.executemany(
+                        "INSERT INTO ext_1m(symbol, ts, close) VALUES(?,?,?) "
+                        "ON CONFLICT(symbol, ts) DO UPDATE SET close=excluded.close",
+                        rows
+                    )
+                    conn.commit()
+                    print(f"[INGEST][ext_1m] +{len(rows)} rows")
+
+
         # ---- 為替（任意。使わないなら config で消す）----
         if cfg.usd_jpy:
             fx = yf_download_7d_1m(cfg.usd_jpy)
             print(fx)
             if not fx.empty:
-                fxw = slice_window_jst(fx, start_jst, end_jst)
+                fxw = slice_window_ust(fx, start_utc, end_utc)
                 if not fxw.empty:
                     fxw = fxw.copy(); fxw["symbol"] = cfg.usd_jpy
             else:

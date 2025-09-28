@@ -41,3 +41,21 @@ max_trades_per_day: 10
 # side_filter: "long"
 auto_thresholds: false     # or
 thr_mode: "fixed"
+
+# config.toyota.yaml
+db_path: ./runtime.db
+symbol: 7203.T
+jst_start: "09:00"
+jst_end: "10:00"
+
+weights:
+  pack1: 1.0
+  pack2: 1.0
+  pack3: 0.5
+  pack4: 0.5
+  pack5: 0.0
+  pack6: 0.0
+  pack7: 0.0
+  pack8: 0.0
+  pack9: 0.0
+  pack10: 0.0
