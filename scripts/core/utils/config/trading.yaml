@@ -1,0 +1,37 @@
+# config/trading.yaml
+
+strategy:
+  name: "toyota_v3_multifactor"
+  version: "3.0"
+
+# エントリー・エグジット閾値
+thresholds:
+  entry:
+    long: 0.15
+    short: -0.15
+  exit:
+    long: 0.05
+    short: -0.05
+
+# シグナル平滑化
+signal_processing:
+  ema_span: 3
+  confirm_bars: 1              # 連続N本で確認
+
+# ポジションサイジング
+position:
+  base_size: 100
+  max_position: 500
+  max_trades_per_day: 10
+
+# リスク管理
+risk:
+  daily_loss_limit: 50000
+  max_drawdown_limit: 100000
+  position_concentration: 0.10
+
+# 実行設定
+execution:
+  ttl_minutes: 8
+  min_time_between_trades: 120  # 秒
+  fee_rate: 0.0002

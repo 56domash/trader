@@ -1,0 +1,68 @@
+# config/features.yaml
+
+# 特徴量の個別設定
+features:
+  rsi_14:
+    enabled: true
+    weight: 1.2
+    scoring:
+      method: "direct_scale"      # RSIは0-100なので/100
+      direction: "bullish"         # 高いほど買い
+  
+  macd_histogram:
+    enabled: true
+    weight: 1.0
+    scoring:
+      method: "tanh_normalize"
+      window: 60
+      direction: "bullish"
+  
+  vwap_deviation:
+    enabled: true
+    weight: 1.1
+    scoring:
+      method: "tanh_normalize"
+      window: 20
+      direction: "bullish"
+  
+  atr_percentile:
+    enabled: true
+    weight: 0.8
+    scoring:
+      method: "direct_scale"
+      direction: "neutral"         # ボラティリティ（方向性なし）
+  
+  bollinger_position:
+    enabled: true
+    weight: 1.0
+    scoring:
+      method: "direct_scale"       # 既に0-1
+      direction: "bullish"
+  
+  opening_range_position:
+    enabled: true
+    weight: 1.5                    # Toyota特化で高重み
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+  
+  volume_imbalance:
+    enabled: true
+    weight: 1.0
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+  
+  # 実験的特徴量（無効化）
+  experimental_feature:
+    enabled: false
+    weight: 0.5
+    scoring:
+      method: "tanh_normalize"
+      direction: "bullish"
+
+# グローバル設定
+aggregation:
+  normalization: "weighted_average"
+  clip_range: [-1.0, 1.0]
+  min_total_weight: 1.0
