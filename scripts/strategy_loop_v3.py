@@ -3,11 +3,16 @@
 V3 Strategy Loop
 既存DBのbars_1mから読み込み、V3パイプラインで計算、signals_1mに書き込み
 """
+from core.features.implementations.volatility import (
+    ATRNormalizedFeature,
+    BollingerPositionFeature
+)
+from core.features.implementations.toyota_specific import OpeningRangeFeature
 from core.signals.decision import DecisionEngine, ThresholdConfig
 from core.signals.aggregator import SignalAggregator
 from core.signals.scoring import FeatureScorer, ScoringConfig
-from core.features.implementations.microstructure import VWAPDeviationFeature
-from core.features.implementations.momentum import RSI14Feature, MACDHistogramFeature
+from core.features.implementations.microstructure import VWAPDeviationFeature, VolumeSpikeFeature, VolumeImbalanceFeature, VolumeRatioFeature
+from core.features.implementations.momentum import RSI14Feature, MACDHistogramFeature, WilliamsRFeature, StochasticFeature
 from core.features.registry import FeatureRegistry
 import pandas as pd
 from zoneinfo import ZoneInfo
@@ -35,8 +40,12 @@ def jst_window_utc(date_jst: datetime.date, start_hm="09:00", end_hm="10:00"):
 
 def load_bars_from_db(conn, symbol, start_utc, end_utc):
     """既存DBから bars_1m を読み込み（warmup込み）"""
-    # 特徴量計算用に10分前から取得
-    warmup_start = start_utc - timedelta(minutes=10)
+    # 🔧 修正前: 10分前から取得
+    # warmup_start = start_utc - timedelta(minutes=10)
+
+    # 🔧 修正後: 30分前から取得（window=60対応）
+    from datetime import timedelta
+    warmup_start = start_utc - timedelta(minutes=30)
 
     query = """
     SELECT ts, open, high, low, close, volume
@@ -136,26 +145,74 @@ def run_v3_strategy(db_path, symbol, target_date, verbose=False):
         registry.register(RSI14Feature())
         registry.register(MACDHistogramFeature())
         registry.register(VWAPDeviationFeature())
-
+        registry.register(OpeningRangeFeature())        # 追加
+        registry.register(ATRNormalizedFeature())       # 追加
+        registry.register(BollingerPositionFeature())   # 追加
+        # 新規5特徴量 ← ここに追加
+        registry.register(WilliamsRFeature())
+        registry.register(StochasticFeature())
+        registry.register(VolumeSpikeFeature())
+        registry.register(VolumeImbalanceFeature())
+        registry.register(VolumeRatioFeature())
         features = registry.compute_all(bars)
 
         if verbose:
             print(f"✓ 特徴量計算: {len(features)} features")
 
         # 4. スコアリング
+        # strategy_loop_v3.py の scoring_config に追加
+
         scoring_config = {
+            # 既存6特徴量
             "rsi_14": ScoringConfig(method="direct_scale", direction="bullish"),
-            "macd_histogram": ScoringConfig(method="tanh_normalize", direction="bullish", params={"window": 60}),
-            "vwap_deviation": ScoringConfig(method="tanh_normalize", direction="bullish", params={"window": 20})
+            "macd_histogram": ScoringConfig(method="tanh_normalize", direction="bullish", params={"window": 20}),
+            "vwap_deviation": ScoringConfig(method="tanh_normalize", direction="bullish", params={"window": 15}),
+            "opening_range": ScoringConfig(method="direct_scale", direction="bullish"),
+            "atr_normalized": ScoringConfig(method="direct_scale", direction="neutral"),
+            "bollinger_position": ScoringConfig(method="direct_scale", direction="bullish"),
+
+            # 新規5特徴量 ← ここに追加
+            "williams_r": ScoringConfig(
+                method="direct_scale",
+                direction="bearish"  # -100~0 を反転（0が買われ過ぎ）
+            ),
+            "stochastic_k": ScoringConfig(
+                method="direct_scale",
+                direction="bullish"  # 0~100 そのまま
+            ),
+            "volume_spike": ScoringConfig(
+                method="tanh_normalize",
+                direction="neutral",  # スパイク自体に方向性なし
+                params={"window": 10}
+            ),
+            "volume_imbalance": ScoringConfig(
+                method="direct_scale",
+                direction="bullish"  # 正=買い優勢
+            ),
+            "volume_ratio": ScoringConfig(
+                method="direct_scale",
+                direction="neutral"  # ゲート機能
+            ),
         }
         scorer = FeatureScorer(scoring_config)
         scores = scorer.transform(features)
 
         # 5. 統合
         weights = {
+            # 既存6特徴量
             "rsi_14": 1.2,
             "macd_histogram": 1.0,
-            "vwap_deviation": 1.1
+            "vwap_deviation": 1.1,
+            "opening_range": 1.5,
+            "atr_normalized": 0.8,
+            "bollinger_position": 1.0,
+
+            # 新規5特徴量 ← ここに追加
+            "williams_r": 0.9,      # モメンタム補完
+            "stochastic_k": 1.0,    # RSIと相関確認
+            "volume_spike": 0.7,    # 補助的
+            "volume_imbalance": 0.8,  # センチメント
+            "volume_ratio": 0.6,    # ゲート
         }
         aggregator = SignalAggregator(weights)
         signals = aggregator.aggregate(scores)

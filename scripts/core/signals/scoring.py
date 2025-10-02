@@ -79,14 +79,45 @@ class FeatureScorer:
 
         return scores
 
+    # def _rolling_zscore(self, s: pd.Series, window: int) -> pd.Series:
+    #     """ローリングZ-score"""
+    #     mean = s.rolling(window).mean()
+    #     std = s.rolling(window).std()
+    #     return (s - mean) / (std + 1e-10)
+
+    # def _rolling_minmax(self, s: pd.Series, window: int) -> pd.Series:
+    #     """ローリングMin-Max正規化"""
+    #     min_val = s.rolling(window).min()
+    #     max_val = s.rolling(window).max()
+    #     return (s - min_val) / (max_val - min_val + 1e-10)
+
     def _rolling_zscore(self, s: pd.Series, window: int) -> pd.Series:
-        """ローリングZ-score"""
-        mean = s.rolling(window).mean()
-        std = s.rolling(window).std()
-        return (s - mean) / (std + 1e-10)
+        """ローリングZ-score（改善版）"""
+        # 🔧 修正: min_periodsを追加して初期値でもz-scoreを計算可能に
+        mean = s.rolling(window, min_periods=max(1, window//2)).mean()
+        std = s.rolling(window, min_periods=max(1, window//2)).std()
+
+        # 🔧 修正: stdが0の場合の処理
+        std = std.replace(0, np.nan).fillna(s.std() if s.std() > 0 else 1.0)
+
+        z = (s - mean) / std
+
+        # 🔧 修正: 異常値をクリップ
+        z = z.clip(-3, 3)
+
+        return z.fillna(0)
 
     def _rolling_minmax(self, s: pd.Series, window: int) -> pd.Series:
-        """ローリングMin-Max正規化"""
-        min_val = s.rolling(window).min()
-        max_val = s.rolling(window).max()
-        return (s - min_val) / (max_val - min_val + 1e-10)
+        """ローリングMin-Max正規化（改善版）"""
+        # 🔧 修正: min_periodsを追加
+        min_val = s.rolling(window, min_periods=max(1, window//2)).min()
+        max_val = s.rolling(window, min_periods=max(1, window//2)).max()
+
+        # 🔧 修正: min==maxの場合の処理
+        range_val = max_val - min_val
+        range_val = range_val.replace(0, np.nan).fillna(
+            s.max() - s.min() if s.max() > s.min() else 1.0)
+
+        normalized = (s - min_val) / range_val
+
+        return normalized.fillna(0.5).clip(0, 1)
