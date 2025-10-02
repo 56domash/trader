@@ -1,0 +1,64 @@
+# config/features.yaml に追加
+
+features:
+  # === Cross-Market Features ===
+  usdjpy_correlation:
+    enabled: false  # 外部データ必要
+    weight: 0.6
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+    description: "USD/JPY相関（円安でToyota有利）"
+  
+  nikkei225_correlation:
+    enabled: false  # 外部データ必要
+    weight: 0.8
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+  
+  market_beta:
+    enabled: false
+    weight: 0.5
+    scoring:
+      method: "direct_scale"
+      direction: "neutral"
+  
+  relative_strength_vs_nikkei:
+    enabled: false
+    weight: 0.7
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+  
+  # === Seasonality Features ===
+  time_of_day:
+    enabled: true
+    weight: 0.4
+    scoring:
+      method: "direct_scale"
+      direction: "neutral"
+    description: "取引時間内での進行度"
+  
+  early_session_bias:
+    enabled: true
+    weight: 0.6
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+    description: "09:00-09:30の前半バイアス"
+  
+  day_of_week:
+    enabled: true
+    weight: 0.3
+    scoring:
+      method: "direct_scale"
+      direction: "neutral"
+  
+  month_end_effect:
+    enabled: true
+    weight: 0.5
+    scoring:
+      method: "direct_scale"
+      direction: "bullish"
+    description: "月末リバランス需要"

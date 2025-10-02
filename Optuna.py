@@ -1,7 +1,7 @@
 import optuna
 import sqlite3
 from datetime import datetime
-from scripts.trader_loop import run_trader, Config
+from scripts.trader_loop_v3 import run_trader, Config
 from optuna.pruners import MedianPruner
 
 DB_PATH = "runtime.db"
