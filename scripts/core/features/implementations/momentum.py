@@ -199,3 +199,36 @@ class StochasticFeature(Feature):
         k_value = k_value.clip(0, 100).fillna(50.0)
 
         return k_value
+
+# core/features/implementations/momentum.py に追加
+
+
+class StochasticKFeature(Feature):
+    """Stochastic %K (14期間)"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="stochastic_k",
+            category="momentum",
+            version="1.0",
+            lookback_bars=14,
+            expected_range=(0, 100),
+            description="Stochastic %K 14期間（0-100）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """Stochastic %K 計算"""
+        high = data["high"]
+        low = data["low"]
+        close = data["close"]
+
+        # 14期間の最高値・最安値
+        highest_high = high.rolling(14).max()
+        lowest_low = low.rolling(14).min()
+
+        # %K = (現在値 - 最安値) / (最高値 - 最安値) * 100
+        stoch_k = 100 * (close - lowest_low) / \
+            (highest_high - lowest_low + 1e-10)
+
+        return stoch_k.fillna(50.0)

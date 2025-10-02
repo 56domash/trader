@@ -216,3 +216,97 @@ class VolumeRatioFeature(Feature):
         ratio = ratio.clip(0, 5).fillna(1.0)
 
         return ratio
+
+# core/features/implementations/microstructure.py に追加
+
+
+class OpeningRangePositionFeature(Feature):
+    """Opening Range Position (Toyota特化)"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="opening_range_position",
+            category="microstructure",
+            version="1.0",
+            lookback_bars=5,  # 09:00-09:05
+            expected_range=(0, 1),
+            description="09:00-09:05のレンジ内での現在価格位置"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """OR Position計算"""
+        # 注意: dataのindexはUTC時刻
+        # 09:00-09:05 JST = 00:00-00:05 UTC
+
+        result = pd.Series(0.5, index=data.index)
+
+        for idx in data.index:
+            # その日の00:00-00:05 UTCのデータを取得
+            jst_time = idx.tz_convert('Asia/Tokyo')
+
+            if jst_time.hour >= 9:  # 9時以降のみ計算
+                # その日の9:00-9:05のデータを抽出
+                day_start = jst_time.replace(hour=0, minute=0, second=0)
+                or_start = day_start.replace(
+                    hour=9, minute=0).tz_convert('UTC')
+                or_end = day_start.replace(hour=9, minute=5).tz_convert('UTC')
+
+                or_data = data[(data.index >= or_start)
+                               & (data.index < or_end)]
+
+                if not or_data.empty:
+                    or_high = or_data["high"].max()
+                    or_low = or_data["low"].min()
+                    current_price = data.loc[idx, "close"]
+
+                    if or_high > or_low:
+                        position = (current_price - or_low) / \
+                            (or_high - or_low)
+                        result.loc[idx] = min(max(position, 0), 1)
+
+        return result
+
+
+class OpeningRangeBreakoutFeature(Feature):
+    """Opening Range Breakout検出"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="opening_range_breakout",
+            category="microstructure",
+            version="1.0",
+            lookback_bars=5,
+            expected_range=(0, 1),
+            description="ORブレイクアウト検出（上抜け=1, 下抜け=0）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """ORブレイクアウト検出"""
+        result = pd.Series(0.5, index=data.index)
+
+        for idx in data.index:
+            jst_time = idx.tz_convert('Asia/Tokyo')
+
+            if jst_time.hour >= 9:
+                day_start = jst_time.replace(hour=0, minute=0, second=0)
+                or_start = day_start.replace(
+                    hour=9, minute=0).tz_convert('UTC')
+                or_end = day_start.replace(hour=9, minute=5).tz_convert('UTC')
+
+                or_data = data[(data.index >= or_start)
+                               & (data.index < or_end)]
+
+                if not or_data.empty:
+                    or_high = or_data["high"].max()
+                    or_low = or_data["low"].min()
+                    current_price = data.loc[idx, "close"]
+
+                    # ブレイクアウト判定
+                    if current_price > or_high * 1.001:  # 0.1%以上の上抜け
+                        result.loc[idx] = 1.0
+                    elif current_price < or_low * 0.999:  # 0.1%以上の下抜け
+                        result.loc[idx] = 0.0
+
+        return result
