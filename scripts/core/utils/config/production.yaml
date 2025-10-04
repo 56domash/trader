@@ -1,0 +1,111 @@
+# config/production.yaml - 本番環境設定
+
+system:
+  symbol: "7203.T"
+  timezone: "Asia/Tokyo"
+  trading_session:
+    start: "09:00"
+    end: "10:00"
+  data_frequency: "1min"
+
+database:
+  path: "runtime.db"
+  timeout: 10000
+  wal_mode: true
+
+# V3 戦略パラメータ
+strategy:
+  name: "toyota_v3_production"
+  
+  # 特徴量の重み（初期値: 後でOptuna最適化）
+  weights:
+    rsi_14: 1.2
+    macd_histogram: 1.0
+    vwap_deviation: 1.1
+    opening_range: 1.5
+    atr_normalized: 0.8
+    bollinger_position: 1.0
+    williams_r: 0.9
+    stochastic_k: 1.0
+    volume_spike: 0.7
+    volume_imbalance: 0.8
+    volume_ratio: 0.6
+    adx_14: 0.8
+    mfi_14: 1.0
+    ichimoku_conversion: 1.3
+    cci_20: 1.1
+    keltner_position: 1.0
+    keltner_width: 0.6
+    aroon_up: 1.3
+    aroon_down: 1.3
+    gap_open: 1.5
+    streak_up: 0.8
+    streak_down: 0.8
+
+  # エントリー・エグジット閾値
+  thresholds:
+    entry_long: 0.15
+    entry_short: -0.15
+    exit_long: 0.05
+    exit_short: -0.05
+  
+  # シグナル処理
+  signal_processing:
+    ema_span: 3
+    confirm_bars: 2
+
+# ポジション管理
+position:
+  base_size: 100
+  max_position: 500
+  max_trades_per_day: 15
+
+# リスク管理
+risk:
+  daily_loss_limit: 50000
+  max_drawdown_limit: 100000
+  position_concentration_limit: 0.10
+  
+  # 価格妥当性チェック
+  max_price_deviation: 0.05  # 直近平均から5%以上離れたら警告
+
+# 実行設定
+execution:
+  ttl_minutes: 8
+  min_time_between_trades: 120  # 秒
+  fee_rate: 0.0002
+  
+  # kabuステーション API設定（本番）
+  api:
+    enabled: true
+    token: "${KABU_API_TOKEN}"  # 環境変数から取得
+    endpoint: "http://localhost:18080/kabusapi"
+    timeout: 5
+
+# モニタリング・アラート
+monitoring:
+  enabled: true
+  
+  # Slack通知
+  slack:
+    enabled: true
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+  
+  # LINE通知
+  line:
+    enabled: false
+    token: "${LINE_TOKEN}"
+  
+  # アラート条件
+  alerts:
+    win_rate_threshold: 0.30      # 30%以下で警告
+    drawdown_threshold_pct: 0.80  # 損失上限の80%で警告
+    no_trades_hours: 2            # 2時間取引なしで警告
+    nan_feature_threshold: 0.30   # 特徴量NaN率30%で警告
+
+# ログ設定
+logging:
+  level: "INFO"
+  file: "logs/toyota_v3_production.log"
+  max_size_mb: 100
+  backup_count: 10
