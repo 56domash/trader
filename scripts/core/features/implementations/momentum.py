@@ -232,3 +232,189 @@ class StochasticKFeature(Feature):
             (highest_high - lowest_low + 1e-10)
 
         return stoch_k.fillna(50.0)
+# core/features/implementations/momentum.py に追加
+
+
+class ADXFeature(Feature):
+    """ADX - Average Directional Index（トレンド強度）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="adx_14",
+            category="momentum",
+            version="1.0",
+            lookback_bars=14,
+            expected_range=(0, 100),
+            description="ADX 14期間（トレンド強度、0-100）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """ADX計算（ta-lib使用）"""
+        import ta
+
+        adx = ta.trend.ADXIndicator(
+            high=data["high"],
+            low=data["low"],
+            close=data["close"],
+            window=14
+        ).adx()
+
+        return adx.fillna(25.0)  # 中立値
+# core/features/implementations/momentum.py に追加
+
+
+class IchimokuConversionFeature(Feature):
+    """一目均衡表 - 転換線"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="ichimoku_conversion",
+            category="momentum",
+            version="1.0",
+            lookback_bars=9,
+            expected_range=(0, 1),  # 正規化後
+            description="一目均衡表 転換線の位置"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """転換線計算"""
+        high = data["high"]
+        low = data["low"]
+        close = data["close"]
+
+        # 転換線 = (9期間高値 + 9期間安値) / 2
+        conversion = (high.rolling(9).max() + low.rolling(9).min()) / 2
+
+        # 現在価格との相対位置（0-1）
+        position = (close - conversion) / conversion
+
+        # tanh正規化で -0.1~0.1 → 0~1
+        import numpy as np
+        normalized = (np.tanh(position * 10) + 1) / 2
+
+        return normalized.fillna(0.5).clip(0, 1)
+
+# core/features/implementations/momentum.py に追加
+
+
+class CCIFeature(Feature):
+    """CCI - Commodity Channel Index（価格サイクル検出）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="cci_20",
+            category="momentum",
+            version="1.0",
+            lookback_bars=20,
+            expected_range=(-200, 200),
+            description="CCI 20期間（±100超えで異常値）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """CCI計算"""
+        import ta
+
+        cci = ta.trend.CCIIndicator(
+            high=data["high"],
+            low=data["low"],
+            close=data["close"],
+            window=20
+        ).cci()
+
+        return cci.fillna(0.0)
+
+# core/features/implementations/momentum.py に追加
+
+
+class AroonUpFeature(Feature):
+    """Aroon Up Indicator（上昇トレンド強度）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="aroon_up",
+            category="momentum",
+            version="1.0",
+            lookback_bars=25,
+            expected_range=(0, 100),
+            description="Aroon Up 25期間（0-100、高いほど上昇トレンド）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """Aroon Up計算"""
+        high = data["high"]
+
+        # 25期間の最高値から経過期間
+        def aroon_up_calc(window):
+            result = pd.Series(index=high.index, dtype=float)
+            for i in range(len(high)):
+                if i < 25:
+                    result.iloc[i] = np.nan
+                else:
+                    # 過去25期間の最高値の位置
+                    window_data = high.iloc[i-24:i+1]
+                    periods_since_high = 24 - window_data.values.argmax()
+                    result.iloc[i] = ((25 - periods_since_high) / 25) * 100
+            return result
+
+        aroon_up = aroon_up_calc(25)
+
+        return aroon_up.fillna(50.0)
+
+
+# ta-libを使った簡易版（推奨）
+class AroonUpFeature(Feature):
+    """Aroon Up Indicator"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="aroon_up",
+            category="momentum",
+            version="1.0",
+            lookback_bars=25,
+            expected_range=(0, 100),
+            description="Aroon Up 25期間"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """Aroon Up計算（ta-lib）"""
+        import ta
+
+        indicator = ta.trend.AroonIndicator(
+            high=data["high"],
+            low=data["low"],
+            window=25
+        )
+
+        return indicator.aroon_up().fillna(50.0)
+
+
+class AroonDownFeature(Feature):
+    """Aroon Down Indicator"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="aroon_down",
+            category="momentum",
+            version="1.0",
+            lookback_bars=25,
+            expected_range=(0, 100),
+            description="Aroon Down 25期間"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """Aroon Down計算（ta-lib）"""
+        import ta
+
+        indicator = ta.trend.AroonIndicator(
+            high=data["high"],
+            low=data["low"],
+            window=25
+        )
+
+        return indicator.aroon_down().fillna(50.0)

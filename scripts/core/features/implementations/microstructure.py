@@ -310,3 +310,142 @@ class OpeningRangeBreakoutFeature(Feature):
                         result.loc[idx] = 0.0
 
         return result
+# core/features/implementations/microstructure.py に追加
+
+
+class MoneyFlowIndexFeature(Feature):
+    """MFI - Money Flow Index（資金フロー）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="mfi_14",
+            category="microstructure",
+            version="1.0",
+            lookback_bars=14,
+            expected_range=(0, 100),
+            description="Money Flow Index 14期間（0-100）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """MFI計算"""
+        import ta
+
+        mfi = ta.volume.MFIIndicator(
+            high=data["high"],
+            low=data["low"],
+            close=data["close"],
+            volume=data["volume"],
+            window=14
+        ).money_flow_index()
+
+        return mfi.fillna(50.0)
+
+# core/features/implementations/microstructure.py に追加
+
+
+class GapOpenFeature(Feature):
+    """Open Gap（前日終値からのギャップ）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="gap_open",
+            category="microstructure",
+            version="1.0",
+            lookback_bars=1,
+            expected_range=(0, 1),
+            description="オープンギャップ（前足終値との乖離率、正規化）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """Gap計算"""
+        open_price = data["open"]
+        prev_close = data["close"].shift(1)
+
+        # ギャップ率
+        gap_pct = (open_price - prev_close) / (prev_close + 1e-10)
+
+        # tanh正規化で -2%~+2% → 0~1
+        import numpy as np
+        normalized = (np.tanh(gap_pct * 50) + 1) / 2
+
+        return normalized.fillna(0.5).clip(0, 1)
+
+
+class StreakUpFeature(Feature):
+    """連続陽線カウント"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="streak_up",
+            category="microstructure",
+            version="1.0",
+            lookback_bars=10,
+            expected_range=(0, 1),
+            description="連続陽線カウント（0-10を0-1に正規化）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """連続陽線計算"""
+        close = data["close"]
+        open_price = data["open"]
+
+        # 陽線判定
+        is_up = (close > open_price).astype(int)
+
+        # 連続カウント
+        streak = pd.Series(0, index=data.index)
+        current_streak = 0
+
+        for i in range(len(is_up)):
+            if is_up.iloc[i] == 1:
+                current_streak += 1
+            else:
+                current_streak = 0
+            streak.iloc[i] = current_streak
+
+        # 0-10 → 0-1 正規化（10本以上は1.0）
+        normalized = (streak / 10.0).clip(0, 1)
+
+        return normalized
+
+
+class StreakDownFeature(Feature):
+    """連続陰線カウント"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="streak_down",
+            category="microstructure",
+            version="1.0",
+            lookback_bars=10,
+            expected_range=(0, 1),
+            description="連続陰線カウント（0-10を0-1に正規化）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """連続陰線計算"""
+        close = data["close"]
+        open_price = data["open"]
+
+        # 陰線判定
+        is_down = (close < open_price).astype(int)
+
+        # 連続カウント
+        streak = pd.Series(0, index=data.index)
+        current_streak = 0
+
+        for i in range(len(is_down)):
+            if is_down.iloc[i] == 1:
+                current_streak += 1
+            else:
+                current_streak = 0
+            streak.iloc[i] = current_streak
+
+        # 0-10 → 0-1 正規化
+        normalized = (streak / 10.0).clip(0, 1)
+
+        return normalized

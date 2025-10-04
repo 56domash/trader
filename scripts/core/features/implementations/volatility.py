@@ -170,3 +170,87 @@ class VolatilityRegimeFeature(Feature):
         )
 
         return vol_percentile.fillna(0.5)
+
+# core/features/implementations/volatility.py に追加
+
+
+class KeltnerChannelPositionFeature(Feature):
+    """Keltner Channel Position（ATRベースのバンド位置）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="keltner_position",
+            category="volatility",
+            version="1.0",
+            lookback_bars=20,
+            expected_range=(0, 1),
+            description="Keltner Channel内での価格位置（下限=0, 上限=1）"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """Keltner Channel Position計算"""
+        close = data["close"]
+        high = data["high"]
+        low = data["low"]
+
+        # EMA 20期間
+        ema20 = close.ewm(span=20, adjust=False).mean()
+
+        # ATR 20期間
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(20).mean()
+
+        # Keltner Channel
+        upper = ema20 + 2 * atr
+        lower = ema20 - 2 * atr
+
+        # Position [0,1]
+        position = (close - lower) / (upper - lower + 1e-10)
+
+        return position.clip(0, 1).fillna(0.5)
+
+
+class KeltnerChannelWidthFeature(Feature):
+    """Keltner Channel Width（バンド幅 = ボラティリティ）"""
+
+    @property
+    def metadata(self) -> FeatureMetadata:
+        return FeatureMetadata(
+            name="keltner_width",
+            category="volatility",
+            version="1.0",
+            lookback_bars=20,
+            expected_range=(0, 1),
+            description="Keltner Channel幅の60期間パーセンタイル"
+        )
+
+    def compute(self, data: pd.DataFrame) -> pd.Series:
+        """KC Width計算"""
+        close = data["close"]
+        high = data["high"]
+        low = data["low"]
+
+        # EMA 20期間
+        ema20 = close.ewm(span=20, adjust=False).mean()
+
+        # ATR 20期間
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(20).mean()
+
+        # Width (相対値)
+        width = (4 * atr) / (ema20 + 1e-10)
+
+        # 60期間パーセンタイル
+        percentile = width.rolling(60).apply(
+            lambda x: (x.iloc[-1] <= x).sum() / len(x),
+            raw=False
+        )
+
+        return percentile.fillna(0.5).clip(0, 1)

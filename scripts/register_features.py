@@ -5,7 +5,8 @@ from core.features.implementations.momentum import (
     RSI14Feature,
     MACDHistogramFeature,
     WilliamsRFeature,
-    StochasticKFeature
+    StochasticKFeature,
+    CCIFeature
 )
 
 from core.features.implementations.microstructure import (
@@ -37,6 +38,35 @@ from core.features.implementations.seasonality import (
     DayOfWeekFeature,
     MonthEndEffectFeature
 )
+from core.features.implementations.momentum import (
+    # ... 既存
+    ADXFeature,  # 追加
+    IchimokuConversionFeature,  # 追加
+)
+
+from core.features.implementations.microstructure import (
+    # ... 既存
+    MoneyFlowIndexFeature,  # 追加
+)
+
+from core.features.implementations.volatility import (
+    # ... 既存
+    KeltnerChannelPositionFeature,
+    KeltnerChannelWidthFeature,
+)
+
+from core.features.implementations.momentum import (
+    # ... 既存
+    AroonUpFeature,
+    AroonDownFeature,
+)
+
+from core.features.implementations.microstructure import (
+    # ... 既存
+    GapOpenFeature,
+    StreakUpFeature,
+    StreakDownFeature,
+)
 
 
 def register_all_features(registry: FeatureRegistry):
@@ -47,6 +77,7 @@ def register_all_features(registry: FeatureRegistry):
     registry.register(MACDHistogramFeature())
     registry.register(WilliamsRFeature())
     registry.register(StochasticKFeature())
+    registry.register(CCIFeature())
 
     # === Volatility ===
     registry.register(ATRPercentileFeature())
@@ -60,7 +91,8 @@ def register_all_features(registry: FeatureRegistry):
     registry.register(VolumeRatioFeature())
     registry.register(OpeningRangePositionFeature())
     registry.register(OpeningRangeBreakoutFeature())
-
+    registry.register(VWAPDeviationFeature())
+    registry.register(MoneyFlowIndexFeature())  # 追加
     # === Cross-Market ===
     registry.register(USDJPYCorrelationFeature())
     registry.register(Nikkei225CorrelationFeature())
@@ -72,5 +104,20 @@ def register_all_features(registry: FeatureRegistry):
     registry.register(EarlySessionBiasFeature())
     registry.register(DayOfWeekFeature())
     registry.register(MonthEndEffectFeature())
+    registry.register(ADXFeature())  # 追加
+    registry.register(IchimokuConversionFeature())  # 追加
+
+    # Volatility
+    registry.register(KeltnerChannelPositionFeature())
+    registry.register(KeltnerChannelWidthFeature())
+
+    # Momentum
+    registry.register(AroonUpFeature())
+    registry.register(AroonDownFeature())
+
+    # Microstructure
+    registry.register(GapOpenFeature())
+    registry.register(StreakUpFeature())
+    registry.register(StreakDownFeature())
 
     print(f"✅ Registered {len(registry.list_features())} features")

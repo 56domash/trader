@@ -193,6 +193,59 @@ def run_v3_strategy(db_path, symbol, target_date, verbose=False):
                 method="direct_scale",
                 direction="neutral"  # ゲート機能
             ),
+            # === 新規追加 ===
+            "adx_14": ScoringConfig(
+                method="direct_scale",
+                direction="neutral",  # トレンド強度なので方向性なし
+            ),
+
+            "mfi_14": ScoringConfig(
+                method="direct_scale",
+                direction="bullish",  # 高い=買い優勢
+            ),
+
+            "ichimoku_conversion": ScoringConfig(
+                method="direct_scale",
+                direction="bullish",  # すでに0-1
+            ),
+            "cci_20": ScoringConfig(
+                method="tanh_normalize",
+                direction="bullish",
+                params={"window": 60}
+            ),
+            # Keltner Channel
+            "keltner_position": ScoringConfig(
+                method="direct_scale",
+                direction="bullish"
+            ),
+            "keltner_width": ScoringConfig(
+                method="direct_scale",
+                direction="neutral"  # ボラティリティ（ゲート用）
+            ),
+
+            # Aroon
+            "aroon_up": ScoringConfig(
+                method="direct_scale",
+                direction="bullish"
+            ),
+            "aroon_down": ScoringConfig(
+                method="direct_scale",
+                direction="bearish"  # 下降トレンドは売りシグナル
+            ),
+
+            # Gap & Streak
+            "gap_open": ScoringConfig(
+                method="direct_scale",
+                direction="bullish"  # ギャップアップは買いシグナル
+            ),
+            "streak_up": ScoringConfig(
+                method="direct_scale",
+                direction="bullish"
+            ),
+            "streak_down": ScoringConfig(
+                method="direct_scale",
+                direction="bearish"
+            ),
         }
         scorer = FeatureScorer(scoring_config)
         scores = scorer.transform(features)
@@ -213,6 +266,23 @@ def run_v3_strategy(db_path, symbol, target_date, verbose=False):
             "volume_spike": 0.7,    # 補助的
             "volume_imbalance": 0.8,  # センチメント
             "volume_ratio": 0.6,    # ゲート
+            "adx_14": 0.8,  # ゲート的な役割（トレンド強度）
+            "mfi_14": 1.0,  # 資金フロー重視
+            "ichimoku_conversion": 1.3,  # 一目は日本株で有効
+            "cci_20": 1.1,  # サイクル検出として重視
+
+            # Keltner Channel
+            "keltner_position": 1.0,
+            "keltner_width": 0.6,  # ゲート機能
+
+            # Aroon（トレンド検出で高重み）
+            "aroon_up": 1.3,
+            "aroon_down": 1.3,
+
+            # Gap & Streak（Toyota特性で重視）
+            "gap_open": 1.5,  # 前日米国市場の影響
+            "streak_up": 0.8,
+            "streak_down": 0.8,
         }
         aggregator = SignalAggregator(weights)
         signals = aggregator.aggregate(scores)
