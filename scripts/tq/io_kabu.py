@@ -294,3 +294,29 @@ if __name__ == "__main__":
     # 発注
     order_id = client.place_order("7203", "BUY", 100, price, "LIMIT")
     print(f"注文ID: {order_id}")
+
+# ファクトリー関数（追加）
+
+
+def create_kabu_client(use_mock: bool = True, db_path: str = "runtime.db"):
+    """
+    kabuクライアント作成
+
+    Args:
+        use_mock: Trueならモック、Falseなら本番API
+        db_path: モック用DB（デフォルト: runtime.db）
+
+    Returns:
+        KabuSteIO or MockKabuSteIO
+    """
+    # scripts/ フォルダ基準のパス調整
+    if use_mock:
+        if not os.path.isabs(db_path):
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            db_path = os.path.join(os.path.dirname(script_dir), db_path)
+
+        print("[INFO] Using MOCK KabuSte client")
+        return MockKabuSteIO(db_path=db_path)
+    else:
+        print("[INFO] Using REAL KabuSte client")
+        return KabuSteIO()
